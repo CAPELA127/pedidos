@@ -112,7 +112,7 @@ export function ComunasView() {
                     {communaIEs.map(ie => {
                       const assignedProfeId = coveredIEMap.get(ie.id);
                       const assignedProfe = assignedProfeId
-                        ? PROFES.find(p => p.id === assignedProfeId)
+                        ? profes.find((p: { id: string }) => p.id === assignedProfeId)
                         : null;
                       const covered = !!assignedProfe;
 
