@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   LayoutDashboard,
   Users,
@@ -10,6 +10,7 @@ import {
   ChevronRight,
   Wand2,
   RotateCcw,
+  Menu,
 } from 'lucide-react';
 import type { ViewName } from '../../types';
 import { useStore, useCurrentWeek, useCoveredIECount } from '../../store/useStore';
@@ -36,11 +37,29 @@ export function Layout({ children }: LayoutProps) {
   const { covered, total } = useCoveredIECount();
   const conflictos = useStore(s => s.conflictos);
   const criticalCount = conflictos.filter(c => c.tipo !== 'ie_sin_cubrir').length;
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+
+  const handleNavClick = (view: ViewName) => {
+    setView(view);
+    setSidebarOpen(false);
+  };
 
   return (
     <div className="flex h-screen bg-slate-50 overflow-hidden">
+      {/* Mobile overlay */}
+      {sidebarOpen && (
+        <div
+          className="fixed inset-0 bg-black/40 z-20 md:hidden"
+          onClick={() => setSidebarOpen(false)}
+        />
+      )}
+
       {/* Sidebar */}
-      <aside className="w-56 bg-white border-r border-slate-200 flex flex-col shadow-sm no-print">
+      <aside className={clsx(
+        'w-56 bg-white border-r border-slate-200 flex flex-col shadow-sm no-print z-30 transition-transform duration-200',
+        'fixed md:static h-full',
+        sidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'
+      )}>
         {/* Logo */}
         <div className="px-4 py-4 border-b border-slate-100">
           <div className="flex items-center gap-2">
@@ -62,7 +81,7 @@ export function Layout({ children }: LayoutProps) {
             return (
               <button
                 key={item.view}
-                onClick={() => setView(item.view)}
+                onClick={() => handleNavClick(item.view)}
                 className={clsx(
                   'w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium transition-colors',
                   isActive
@@ -99,8 +118,15 @@ export function Layout({ children }: LayoutProps) {
       {/* Main content */}
       <div className="flex-1 flex flex-col overflow-hidden">
         {/* Header */}
-        <header className="bg-white border-b border-slate-200 px-6 py-3 flex items-center justify-between no-print">
-          <div className="flex items-center gap-3">
+        <header className="bg-white border-b border-slate-200 px-3 md:px-6 py-3 flex items-center justify-between no-print">
+          <div className="flex items-center gap-2 md:gap-3">
+            {/* Mobile menu button */}
+            <button
+              onClick={() => setSidebarOpen(true)}
+              className="md:hidden p-1.5 rounded-md hover:bg-slate-100 transition-colors"
+            >
+              <Menu size={18} className="text-slate-600" />
+            </button>
             {/* Week navigation */}
             <button
               onClick={() => setSelectedWeek(Math.max(0, selectedWeekIndex - 1))}
@@ -126,9 +152,9 @@ export function Layout({ children }: LayoutProps) {
             </button>
           </div>
 
-          <div className="flex items-center gap-4">
-            {/* IE coverage counter */}
-            <div className="flex items-center gap-2 bg-slate-50 rounded-lg px-3 py-1.5">
+          <div className="flex items-center gap-2 md:gap-4">
+            {/* IE coverage counter — hidden on very small screens */}
+            <div className="hidden sm:flex items-center gap-2 bg-slate-50 rounded-lg px-3 py-1.5">
               <div className="text-xs text-slate-500">Cobertura IEs</div>
               <div className="flex items-center gap-1">
                 <span className="text-sm font-bold text-slate-800">{covered}</span>
@@ -145,16 +171,16 @@ export function Layout({ children }: LayoutProps) {
             {/* Auto-assign button */}
             <button
               onClick={previewAutoAssign}
-              className="flex items-center gap-2 px-3 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors shadow-sm"
+              className="flex items-center gap-1.5 px-2.5 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 transition-colors shadow-sm"
             >
               <Wand2 size={14} />
-              Auto-asignar
+              <span className="hidden sm:inline">Auto-asignar</span>
             </button>
           </div>
         </header>
 
         {/* Content area */}
-        <main className="flex-1 overflow-auto p-6">
+        <main className="flex-1 overflow-auto p-3 md:p-6">
           {children}
         </main>
       </div>

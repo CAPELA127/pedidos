@@ -34,7 +34,7 @@ export function IEView() {
   return (
     <div>
       {/* Stats row */}
-      <div className="grid grid-cols-4 gap-4 mb-6">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-6">
         <div className="bg-white rounded-xl p-4 shadow-sm border border-slate-200">
           <div className="text-2xl font-bold text-slate-800">{IES.length}</div>
           <div className="text-xs text-slate-500 mt-1">Total IEs</div>
@@ -56,39 +56,41 @@ export function IEView() {
       </div>
 
       {/* Filters */}
-      <div className="flex gap-3 mb-4 flex-wrap items-center">
-        <div className="relative">
+      <div className="flex flex-col sm:flex-row gap-2 sm:gap-3 mb-4">
+        <div className="relative flex-1 sm:flex-none">
           <Search size={14} className="absolute left-2.5 top-2.5 text-slate-400" />
           <input
             type="text"
             placeholder="Buscar IE..."
             value={search}
             onChange={e => setSearch(e.target.value)}
-            className="pl-8 pr-3 py-2 rounded-lg border border-slate-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 w-56"
+            className="pl-8 pr-3 py-2 rounded-lg border border-slate-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 w-full sm:w-56"
           />
         </div>
 
-        <select
-          value={filterTipo}
-          onChange={e => setFilterTipo(e.target.value as typeof filterTipo)}
-          className="px-3 py-2 rounded-lg border border-slate-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-        >
-          <option value="all">Todos los tipos</option>
-          <option value="Fijo">Fijo</option>
-          <option value="Rotativo">Rotativo</option>
-        </select>
+        <div className="flex gap-2 sm:gap-3 flex-wrap items-center">
+          <select
+            value={filterTipo}
+            onChange={e => setFilterTipo(e.target.value as typeof filterTipo)}
+            className="flex-1 sm:flex-none px-3 py-2 rounded-lg border border-slate-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+          >
+            <option value="all">Todos los tipos</option>
+            <option value="Fijo">Fijo</option>
+            <option value="Rotativo">Rotativo</option>
+          </select>
 
-        <select
-          value={filterCubierta}
-          onChange={e => setFilterCubierta(e.target.value as typeof filterCubierta)}
-          className="px-3 py-2 rounded-lg border border-slate-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-        >
-          <option value="all">Todas</option>
-          <option value="cubierta">Con cobertura</option>
-          <option value="sin_cubrir">Sin cobertura</option>
-        </select>
+          <select
+            value={filterCubierta}
+            onChange={e => setFilterCubierta(e.target.value as typeof filterCubierta)}
+            className="flex-1 sm:flex-none px-3 py-2 rounded-lg border border-slate-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+          >
+            <option value="all">Todas</option>
+            <option value="cubierta">Con cobertura</option>
+            <option value="sin_cubrir">Sin cobertura</option>
+          </select>
 
-        <span className="text-sm text-slate-500 ml-auto">{filtered.length} IEs</span>
+          <span className="text-sm text-slate-500 ml-auto">{filtered.length} IEs</span>
+        </div>
       </div>
 
       {/* Table */}
