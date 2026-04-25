@@ -1,5 +1,18 @@
 import { create } from 'zustand';
-import { persist } from 'zustand/middleware';
+import { persist, createJSONStorage, type StateStorage } from 'zustand/middleware';
+
+let _persistTimer: ReturnType<typeof setTimeout> | null = null;
+const debouncedLocalStorage: StateStorage = {
+  getItem: (name) => localStorage.getItem(name),
+  setItem: (name, value) => {
+    if (_persistTimer) clearTimeout(_persistTimer);
+    _persistTimer = setTimeout(() => {
+      localStorage.setItem(name, value);
+      _persistTimer = null;
+    }, 300);
+  },
+  removeItem: (name) => localStorage.removeItem(name),
+};
 import type { Slot, IE, Profe, Conflicto, ViewName, AutoAssignChange } from '../types';
 import { PROFES, IES, WEEKS, generateInitialSlots, ALL_DATES } from '../data/initial-data';
 import { detectConflicts } from '../lib/conflicts';
@@ -175,6 +188,7 @@ export const useStore = create<StoreState>()(
     },
     {
       name: 'mates-agenda-store',
+      storage: createJSONStorage(() => debouncedLocalStorage),
       partialize: (state) => ({
         slots: state.slots,
         profes: state.profes,

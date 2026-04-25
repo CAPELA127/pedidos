@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   DndContext,
   DragOverlay,
@@ -15,6 +15,7 @@ import { format, parseISO } from 'date-fns';
 import { es } from 'date-fns/locale';
 import { X, GripVertical } from 'lucide-react';
 import { clsx } from 'clsx';
+import { useShallow } from 'zustand/react/shallow';
 import type { Slot } from '../../types';
 import { useStore, useCurrentWeek } from '../../store/useStore';
 import { IES, HOURS } from '../../data/initial-data';
@@ -26,18 +27,17 @@ const HOUR_LABELS: Record<number, string> = {
 
 // ─── Draggable slot badge ────────────────────────────────────────────────────
 
-function DraggableSlotBadge({
+const DraggableSlotBadge = React.memo(function DraggableSlotBadge({
   slot,
   isOverlay = false,
 }: {
   slot: Slot;
   isOverlay?: boolean;
 }) {
-  const profes = useStore(s => s.profes);
-  const profe = profes.find(p => p.id === slot.profeId);
+  const profe = useStore(s => s.profes.find(p => p.id === slot.profeId));
+  const unassignSlot = useStore(s => s.unassignSlot);
   const ie = IES.find(i => i.id === slot.ieId);
   const isApoyo = profe && ie && ie.comuna !== profe.comuna;
-  const { unassignSlot } = useStore();
 
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
     id: slot.id,
@@ -88,53 +88,46 @@ function DraggableSlotBadge({
       )}
     </div>
   );
-}
+});
 
 // ─── Droppable cell ──────────────────────────────────────────────────────────
 
-function DroppableCell({
+const DroppableCell = React.memo(function DroppableCell({
   date,
   hour,
-  slots,
   filterProfeId,
   filterIEId,
   draggingSlot,
+  isValidTarget,
 }: {
   date: string;
   hour: number;
-  slots: Slot[];
   filterProfeId: string | null;
   filterIEId: string | null;
   draggingSlot: Slot | null;
+  isValidTarget: boolean;
 }) {
   const cellId = `cell::${date}::${hour}`;
   const { isOver, setNodeRef } = useDroppable({ id: cellId, data: { date, hour } });
 
-  const activeSlots = slots.filter(s => {
-    if (s.date !== date || s.hour !== hour) return false;
-    if (s.status !== 'assigned' && s.status !== 'blocked') return false;
-    if (filterProfeId && s.profeId !== filterProfeId) return false;
-    if (filterIEId && s.ieId !== filterIEId) return false;
-    return true;
-  });
+  // Own selector with useShallow — only re-renders when THIS cell's slots change
+  const activeSlots = useStore(
+    useShallow(s => s.slots.filter(slot => {
+      if (slot.date !== date || slot.hour !== hour) return false;
+      if (slot.status !== 'assigned' && slot.status !== 'blocked') return false;
+      if (filterProfeId && slot.profeId !== filterProfeId) return false;
+      if (filterIEId && slot.ieId !== filterIEId) return false;
+      return true;
+    }))
+  );
 
   const profes = useStore(s => s.profes);
 
-  // Background: color of the first assigned profe (with low opacity) or drop highlight
   const firstProfe = activeSlots.length > 0
     ? profes.find(p => p.id === activeSlots[0].profeId)
     : null;
 
-  // Check if this cell is a valid drop target for the dragging slot
-  const isValidTarget = draggingSlot
-    ? slots.some(
-        s => s.profeId === draggingSlot.profeId && s.date === date && s.hour === hour && s.status === 'available'
-      )
-    : false;
-
-  const bgColor = firstProfe
-    ? `${firstProfe.color}18`  // 10% opacity background
-    : undefined;
+  const bgColor = firstProfe ? `${firstProfe.color}18` : undefined;
 
   return (
     <div
@@ -152,13 +145,12 @@ function DroppableCell({
       ))}
     </div>
   );
-}
+});
 
 // ─── Main calendar ────────────────────────────────────────────────────────────
 
 export function WeeklyCalendar() {
   const currentWeek = useCurrentWeek();
-  const allSlots = useStore(s => s.slots);
   const profes = useStore(s => s.profes);
   const { moveSlot } = useStore();
 
@@ -166,19 +158,39 @@ export function WeeklyCalendar() {
   const [filterIEId, setFilterIEId] = useState<string | null>(null);
   const [activeSlotId, setActiveSlotId] = useState<string | null>(null);
 
-  const weekSlots = allSlots.filter(s => currentWeek.dates.includes(s.date));
-  const draggingSlot = activeSlotId ? allSlots.find(s => s.id === activeSlotId) ?? null : null;
+  // Targeted selector: only subscribes to the dragging slot itself
+  const draggingSlot = useStore(s =>
+    activeSlotId ? (s.slots.find(sl => sl.id === activeSlotId) ?? null) : null
+  );
+
+  // Computed ONCE at drag start — set of "profeId::date::hour" for valid drop targets
+  const [validTargetKeys, setValidTargetKeys] = useState<Set<string> | null>(null);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } })
   );
 
   function handleDragStart(event: DragStartEvent) {
-    setActiveSlotId(String(event.active.id));
+    const slotId = String(event.active.id);
+    setActiveSlotId(slotId);
+
+    // Compute valid drop targets once, using store snapshot
+    const allSlots = useStore.getState().slots;
+    const slot = allSlots.find(s => s.id === slotId);
+    if (slot) {
+      const keys = new Set<string>();
+      for (const s of allSlots) {
+        if (s.profeId === slot.profeId && s.status === 'available') {
+          keys.add(`${s.date}::${s.hour}`);
+        }
+      }
+      setValidTargetKeys(keys);
+    }
   }
 
   function handleDragEnd(event: DragEndEvent) {
     setActiveSlotId(null);
+    setValidTargetKeys(null);
     const { active, over } = event;
     if (!over) return;
 
@@ -190,6 +202,18 @@ export function WeeklyCalendar() {
     const hour = parseInt(parts[2], 10);
     moveSlot(String(active.id), date, hour);
   }
+
+  // Pre-compute isValidTarget booleans for each date+hour — one O(1) lookup per cell
+  const validTargetMap = useMemo(() => {
+    if (!validTargetKeys) return null;
+    const map = new Map<string, boolean>();
+    for (const date of currentWeek.dates) {
+      for (const hour of HOURS) {
+        map.set(`${date}::${hour}`, validTargetKeys.has(`${date}::${hour}`));
+      }
+    }
+    return map;
+  }, [validTargetKeys, currentWeek.dates]);
 
   return (
     <DndContext sensors={sensors} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
@@ -291,10 +315,10 @@ export function WeeklyCalendar() {
                   key={date}
                   date={date}
                   hour={hour}
-                  slots={weekSlots}
                   filterProfeId={filterProfeId}
                   filterIEId={filterIEId}
                   draggingSlot={draggingSlot}
+                  isValidTarget={validTargetMap?.get(`${date}::${hour}`) ?? false}
                 />
               ))}
             </div>

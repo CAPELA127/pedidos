@@ -1,20 +1,32 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { WeeklyCalendar } from './WeeklyCalendar';
 import { useStore } from '../../store/useStore';
 import { PROFES, IES } from '../../data/initial-data';
 
 export function DashboardView() {
   const allSlots = useStore(s => s.slots);
-
-  // Quick stats
-  const assigned = allSlots.filter(s => s.status === 'assigned' || s.status === 'blocked').length;
-  const coveredIEs = new Set(
-    allSlots
-      .filter(s => (s.status === 'assigned' || s.status === 'blocked') && s.ieId)
-      .map(s => s.ieId!)
-  ).size;
   const conflictos = useStore(s => s.conflictos);
-  const critical = conflictos.filter(c => c.tipo !== 'ie_sin_cubrir').length;
+
+  const { assigned, coveredIEs, profeHours } = useMemo(() => {
+    let assigned = 0;
+    const coveredSet = new Set<string>();
+    const hoursMap = new Map<string, number>();
+
+    for (const s of allSlots) {
+      if (s.status === 'assigned' || s.status === 'blocked') {
+        assigned++;
+        if (s.ieId) coveredSet.add(s.ieId);
+        hoursMap.set(s.profeId, (hoursMap.get(s.profeId) ?? 0) + 1);
+      }
+    }
+
+    return { assigned, coveredIEs: coveredSet.size, profeHours: hoursMap };
+  }, [allSlots]);
+
+  const critical = useMemo(
+    () => conflictos.filter(c => c.tipo !== 'ie_sin_cubrir').length,
+    [conflictos],
+  );
 
   return (
     <div>
@@ -43,9 +55,7 @@ export function DashboardView() {
         <h3 className="text-sm font-semibold text-slate-700 mb-3">Carga por profe</h3>
         <div className="space-y-2">
           {PROFES.map(profe => {
-            const hours = allSlots.filter(
-              s => s.profeId === profe.id && (s.status === 'assigned' || s.status === 'blocked')
-            ).length;
+            const hours = profeHours.get(profe.id) ?? 0;
             const maxHours = 20;
             const pct = Math.min(100, Math.round((hours / maxHours) * 100));
 
