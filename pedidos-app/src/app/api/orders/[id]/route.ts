@@ -15,10 +15,10 @@ interface OrderItemUpdate {
 
 export async function PUT(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const orderId = params.id;
+    const { id: orderId } = await params;
     const { items, status } = await request.json();
 
     if (!items || !Array.isArray(items)) {
