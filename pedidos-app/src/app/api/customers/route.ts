@@ -1,14 +1,14 @@
 import { createClient } from '@supabase/supabase-js';
 import { NextRequest, NextResponse } from 'next/server';
 
-// Usamos service_role para bypassear RLS en operaciones del servidor
-const supabase = createClient(
+export const dynamic = 'force-dynamic';
+
+const TABLE = 'customers';
+
+const getSupabase = () => createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY ?? process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
-
-// Tabla en Supabase: se intenta con minúscula primero
-const TABLE = 'customers';
 
 export async function GET(request: NextRequest) {
   try {
@@ -21,7 +21,7 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    const { data, error } = await supabase
+    const { data, error } = await getSupabase()
       .from(TABLE)
       .select('id, name, email')
       .eq('email', email)
@@ -56,7 +56,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Buscar cliente existente por email
-    const { data: existing } = await supabase
+    const { data: existing } = await getSupabase()
       .from(TABLE)
       .select('id, name, email')
       .eq('email', email)
@@ -70,7 +70,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Crear nuevo cliente — solo name y email, phone es opcional
-    const { data: newCustomer, error } = await supabase
+    const { data: newCustomer, error } = await getSupabase()
       .from(TABLE)
       .insert([{ name, email }])
       .select('id, name, email')

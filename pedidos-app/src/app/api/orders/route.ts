@@ -1,7 +1,9 @@
 import { createClient } from '@supabase/supabase-js';
 import { NextResponse } from 'next/server';
 
-const supabase = createClient(
+export const dynamic = 'force-dynamic';
+
+const getSupabase = () => createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY ?? process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
@@ -25,7 +27,7 @@ interface OrderPayload {
 export async function GET() {
   try {
     // Obtener órdenes con clientes e items (sin JOIN a Products)
-    const { data: orders, error } = await supabase
+    const { data: orders, error } = await getSupabase()
       .from('orders')
       .select(`
         id,
@@ -88,7 +90,7 @@ export async function POST(req: Request) {
     // Buscar o crear cliente
     let customerId = providedCustomerId;
     if (!customerId) {
-      const { data: existing } = await supabase
+      const { data: existing } = await getSupabase()
         .from('customers')
         .select('id')
         .eq('email', email)
@@ -97,7 +99,7 @@ export async function POST(req: Request) {
       if (existing) {
         customerId = existing.id;
       } else {
-        const { data: created, error: createErr } = await supabase
+        const { data: created, error: createErr } = await getSupabase()
           .from('customers')
           .insert([{ name: customer, email, phone: phone || null }])
           .select('id')
@@ -111,7 +113,7 @@ export async function POST(req: Request) {
     const total = items.reduce((sum, item) => sum + (item.price || 0) * item.quantity, 0);
 
     // Crear orden
-    const { error: orderErr } = await supabase
+    const { error: orderErr } = await getSupabase()
       .from('orders')
       .insert([{ id: orderId, customer_id: customerId, status: 'Pendiente', total }]);
     if (orderErr) throw orderErr;
@@ -125,7 +127,7 @@ export async function POST(req: Request) {
       price_at_time: item.price || 0
     }));
 
-    const { error: itemsErr } = await supabase
+    const { error: itemsErr } = await getSupabase()
       .from('order_items')
       .insert(itemsToInsert);
     if (itemsErr) throw itemsErr;

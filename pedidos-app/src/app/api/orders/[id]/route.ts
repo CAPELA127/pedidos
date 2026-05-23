@@ -1,7 +1,9 @@
 import { createClient } from '@supabase/supabase-js';
 import { NextRequest, NextResponse } from 'next/server';
 
-const supabase = createClient(
+export const dynamic = 'force-dynamic';
+
+const getSupabase = () => createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY ?? process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
@@ -24,7 +26,7 @@ export async function PUT(
 
     // ── Actualización solo de status (sin items) ──
     if (!items && status) {
-      const { error: statusErr } = await supabase
+      const { error: statusErr } = await getSupabase()
         .from('orders')
         .update({ status })
         .eq('id', orderId);
@@ -43,14 +45,14 @@ export async function PUT(
       sum + ((item.price || 0) * item.quantity), 0);
 
     // Actualizar total y status de la orden
-    const { error: updateError } = await supabase
+    const { error: updateError } = await getSupabase()
       .from('orders')
       .update({ status: status || 'Pendiente', total })
       .eq('id', orderId);
     if (updateError) throw updateError;
 
     // Traer items actuales
-    const { data: existingItems, error: fetchError } = await supabase
+    const { data: existingItems, error: fetchError } = await getSupabase()
       .from('order_items')
       .select('id, product_ref')
       .eq('order_id', orderId);
@@ -61,7 +63,7 @@ export async function PUT(
     // Eliminar items removidos
     const toDelete = (existingItems || []).filter(i => !newRefs.has(i.product_ref));
     if (toDelete.length > 0) {
-      const { error: delErr } = await supabase
+      const { error: delErr } = await getSupabase()
         .from('order_items')
         .delete()
         .in('id', toDelete.map(i => i.id));
@@ -72,13 +74,13 @@ export async function PUT(
     for (const item of items) {
       const existing = (existingItems || []).find(i => i.product_ref === item.ref);
       if (existing) {
-        const { error: updErr } = await supabase
+        const { error: updErr } = await getSupabase()
           .from('order_items')
           .update({ quantity: item.quantity, price_at_time: item.price || 0, product_name: item.name })
           .eq('id', existing.id);
         if (updErr) throw updErr;
       } else {
-        const { error: insErr } = await supabase
+        const { error: insErr } = await getSupabase()
           .from('order_items')
           .insert({ order_id: orderId, product_ref: item.ref, product_name: item.name, quantity: item.quantity, price_at_time: item.price || 0 });
         if (insErr) throw insErr;
