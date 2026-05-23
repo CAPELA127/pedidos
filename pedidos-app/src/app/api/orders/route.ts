@@ -20,57 +20,54 @@ interface OrderPayload {
   customer_id?: string;
   items: OrderItem[];
   phone?: string;
-  status?: string;
-  date?: string;
-  total_items?: number;
 }
 
 export async function GET() {
   try {
+    // Obtener órdenes con clientes e items (sin JOIN a Products)
     const { data: orders, error } = await supabase
-      .from('Orders')
+      .from('orders')
       .select(`
         id,
         customer_id,
         status,
         total,
         created_at,
-        Customers (id, name, email, phone),
-        OrderItems (
+        customers (id, name, email),
+        order_items (
           id,
           product_ref,
+          product_name,
           quantity,
-          price_at_time,
-          Products (ref_code, name)
+          price_at_time
         )
       `)
       .order('created_at', { ascending: false });
 
     if (error) throw error;
 
-    // Mapear respuesta para compatibilidad con frontend
-    const formattedOrders = orders.map((o: any) => ({
+    const formattedOrders = (orders || []).map((o: any) => ({
       id: o.id,
-      customer: o.Customers?.name || 'Unknown',
-      email: o.Customers?.email,
+      customer: o.customers?.name || 'Sin nombre',
+      email: o.customers?.email || '',
       customer_id: o.customer_id,
-      phone: o.Customers?.phone,
-      items: (o.OrderItems || []).map((oi: any) => ({
+      items: (o.order_items || []).map((oi: any) => ({
         ref: oi.product_ref,
-        name: oi.Products?.name || 'Producto',
+        name: oi.product_name || oi.product_ref,
         quantity: oi.quantity,
         price: oi.price_at_time
       })),
       status: o.status,
       total: o.total,
-      date: new Date(o.created_at).toLocaleDateString('es-ES'),
-      total_items: (o.OrderItems || []).reduce((sum: number, i: any) => sum + i.quantity, 0)
+      date: new Date(o.created_at).toLocaleDateString('es-CO'),
+      total_items: (o.order_items || []).reduce((s: number, i: any) => s + i.quantity, 0)
     }));
 
     return NextResponse.json({ orders: formattedOrders });
   } catch (error) {
+    console.error('GET /api/orders error:', error);
     return NextResponse.json(
-      { success: false, message: error instanceof Error ? error.message : 'Error fetching orders' },
+      { success: false, message: error instanceof Error ? error.message : 'Error obteniendo pedidos' },
       { status: 500 }
     );
   }
@@ -79,105 +76,74 @@ export async function GET() {
 export async function POST(req: Request) {
   try {
     const payload: OrderPayload = await req.json();
-
-    const {
-      customer,
-      email,
-      customer_id: providedCustomerId,
-      items,
-      phone
-    } = payload;
+    const { customer, email, customer_id: providedCustomerId, items, phone } = payload;
 
     if (!customer || !email || !items || items.length === 0) {
       return NextResponse.json(
-        { success: false, message: 'customer, email, and items are required' },
+        { success: false, message: 'Faltan campos: customer, email, items' },
         { status: 400 }
       );
     }
 
+    // Buscar o crear cliente
     let customerId = providedCustomerId;
-
-    // Si no viene customer_id, buscar/crear cliente
     if (!customerId) {
-      const { data: existingCustomer } = await supabase
-        .from('Customers')
+      const { data: existing } = await supabase
+        .from('customers')
         .select('id')
         .eq('email', email)
         .single();
 
-      if (existingCustomer) {
-        customerId = existingCustomer.id;
+      if (existing) {
+        customerId = existing.id;
       } else {
-        // Crear nuevo cliente
-        const { data: newCustomer, error: createError } = await supabase
-          .from('Customers')
+        const { data: created, error: createErr } = await supabase
+          .from('customers')
           .insert([{ name: customer, email, phone: phone || null }])
           .select('id')
           .single();
-
-        if (createError) throw createError;
-        customerId = newCustomer.id;
+        if (createErr) throw createErr;
+        customerId = created.id;
       }
     }
 
-    // Generar ID del pedido
     const orderId = `ORD-${Math.floor(1000 + Math.random() * 9000)}`;
-
-    // Calcular total
     const total = items.reduce((sum, item) => sum + (item.price || 0) * item.quantity, 0);
 
     // Crear orden
-    const { error: orderError } = await supabase
-      .from('Orders')
-      .insert([{
-        id: orderId,
-        customer_id: customerId,
-        status: 'Pendiente',
-        total
-      }]);
+    const { error: orderErr } = await supabase
+      .from('orders')
+      .insert([{ id: orderId, customer_id: customerId, status: 'Pendiente', total }]);
+    if (orderErr) throw orderErr;
 
-    if (orderError) throw orderError;
-
-    // Crear items del pedido
+    // Crear items — guardamos product_name para no depender de JOIN
     const itemsToInsert = items.map(item => ({
       order_id: orderId,
       product_ref: item.ref,
+      product_name: item.name,          // ← nombre real del inventario
       quantity: item.quantity,
       price_at_time: item.price || 0
     }));
 
-    const { error: itemsError } = await supabase
-      .from('OrderItems')
+    const { error: itemsErr } = await supabase
+      .from('order_items')
       .insert(itemsToInsert);
-
-    if (itemsError) throw itemsError;
-
-    // Retornar orden creada
-    const formattedOrder = {
-      id: orderId,
-      customer,
-      email,
-      customer_id: customerId,
-      phone,
-      items,
-      status: 'Pendiente',
-      total,
-      date: new Date().toLocaleDateString('es-ES'),
-      total_items: items.reduce((sum, i) => sum + i.quantity, 0)
-    };
+    if (itemsErr) throw itemsErr;
 
     return NextResponse.json({
       success: true,
-      order: formattedOrder,
-      message: `Pedido ${orderId} guardado en base de datos`
+      order: {
+        id: orderId, customer, email, customer_id: customerId,
+        items, status: 'Pendiente', total,
+        date: new Date().toLocaleDateString('es-CO'),
+        total_items: items.reduce((s, i) => s + i.quantity, 0)
+      },
+      message: `Pedido ${orderId} guardado`
     });
   } catch (error) {
-    console.error('Error guardando orden:', error);
+    console.error('POST /api/orders error:', error);
     return NextResponse.json(
-      {
-        success: false,
-        message: error instanceof Error ? error.message : 'Error guardando la orden'
-      },
+      { success: false, message: error instanceof Error ? error.message : 'Error guardando pedido' },
       { status: 500 }
     );
   }

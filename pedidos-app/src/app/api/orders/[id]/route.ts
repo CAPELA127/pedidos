@@ -13,47 +13,6 @@ interface OrderItemUpdate {
   price?: number;
 }
 
-export async function GET(
-  request: NextRequest,
-  { params }: { params: { id: string } }
-) {
-  try {
-    const orderId = params.id;
-
-    const { data: order, error: orderError } = await supabase
-      .from('Orders')
-      .select(`
-        id,
-        customer_id,
-        status,
-        total,
-        created_at,
-        Customers (id, name, email, phone),
-        OrderItems (
-          id,
-          product_ref,
-          quantity,
-          price_at_time,
-          Products (ref_code, name)
-        )
-      `)
-      .eq('id', orderId)
-      .single();
-
-    if (orderError) throw orderError;
-
-    return NextResponse.json({
-      success: true,
-      order
-    });
-  } catch (error) {
-    return NextResponse.json(
-      { success: false, message: error instanceof Error ? error.message : 'Error fetching order' },
-      { status: 500 }
-    );
-  }
-}
-
 export async function PUT(
   request: NextRequest,
   { params }: { params: { id: string } }
@@ -64,89 +23,62 @@ export async function PUT(
 
     if (!items || !Array.isArray(items)) {
       return NextResponse.json(
-        { success: false, message: 'Items array is required' },
+        { success: false, message: 'Se requiere el array de items' },
         { status: 400 }
       );
     }
 
-    // Calcular total
-    const total = items.reduce((sum: number, item: OrderItemUpdate) => {
-      return sum + ((item.price || 0) * item.quantity);
-    }, 0);
+    const total = items.reduce((sum: number, item: OrderItemUpdate) =>
+      sum + ((item.price || 0) * item.quantity), 0);
 
-    // Actualizar Order (status y total)
+    // Actualizar total y status de la orden
     const { error: updateError } = await supabase
-      .from('Orders')
-      .update({
-        status: status || 'Pendiente',
-        total
-      })
+      .from('orders')
+      .update({ status: status || 'Pendiente', total })
       .eq('id', orderId);
-
     if (updateError) throw updateError;
 
-    // Obtener los OrderItems actuales
+    // Traer items actuales
     const { data: existingItems, error: fetchError } = await supabase
-      .from('OrderItems')
+      .from('order_items')
       .select('id, product_ref')
       .eq('order_id', orderId);
-
     if (fetchError) throw fetchError;
 
-    // Eliminar items que fueron removidos
-    const existingRefs = new Set(existingItems.map(i => i.product_ref));
     const newRefs = new Set(items.map((i: OrderItemUpdate) => i.ref));
 
-    const toDelete = existingItems.filter(i => !newRefs.has(i.product_ref));
-
+    // Eliminar items removidos
+    const toDelete = (existingItems || []).filter(i => !newRefs.has(i.product_ref));
     if (toDelete.length > 0) {
-      const { error: deleteError } = await supabase
-        .from('OrderItems')
+      const { error: delErr } = await supabase
+        .from('order_items')
         .delete()
         .in('id', toDelete.map(i => i.id));
-
-      if (deleteError) throw deleteError;
+      if (delErr) throw delErr;
     }
 
-    // Upsert items (actualizar o crear)
+    // Actualizar o crear cada item
     for (const item of items) {
-      const existing = existingItems.find(i => i.product_ref === item.ref);
-
+      const existing = (existingItems || []).find(i => i.product_ref === item.ref);
       if (existing) {
-        // Actualizar
-        const { error: updateItemError } = await supabase
-          .from('OrderItems')
-          .update({
-            quantity: item.quantity,
-            price_at_time: item.price || 0
-          })
-          .eq('product_ref', item.ref)
-          .eq('order_id', orderId);
-
-        if (updateItemError) throw updateItemError;
+        const { error: updErr } = await supabase
+          .from('order_items')
+          .update({ quantity: item.quantity, price_at_time: item.price || 0, product_name: item.name })
+          .eq('id', existing.id);
+        if (updErr) throw updErr;
       } else {
-        // Crear nuevo
-        const { error: insertError } = await supabase
-          .from('OrderItems')
-          .insert({
-            order_id: orderId,
-            product_ref: item.ref,
-            quantity: item.quantity,
-            price_at_time: item.price || 0
-          });
-
-        if (insertError) throw insertError;
+        const { error: insErr } = await supabase
+          .from('order_items')
+          .insert({ order_id: orderId, product_ref: item.ref, product_name: item.name, quantity: item.quantity, price_at_time: item.price || 0 });
+        if (insErr) throw insErr;
       }
     }
 
-    return NextResponse.json({
-      success: true,
-      message: 'Order updated successfully',
-      total
-    });
+    return NextResponse.json({ success: true, message: 'Pedido actualizado', total });
   } catch (error) {
+    console.error('PUT /api/orders/[id] error:', error);
     return NextResponse.json(
-      { success: false, message: error instanceof Error ? error.message : 'Error updating order' },
+      { success: false, message: error instanceof Error ? error.message : 'Error actualizando pedido' },
       { status: 500 }
     );
   }
