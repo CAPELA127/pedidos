@@ -19,7 +19,18 @@ export async function PUT(
 ) {
   try {
     const { id: orderId } = await params;
-    const { items, status } = await request.json();
+    const body = await request.json();
+    const { items, status } = body;
+
+    // ── Actualización solo de status (sin items) ──
+    if (!items && status) {
+      const { error: statusErr } = await supabase
+        .from('orders')
+        .update({ status })
+        .eq('id', orderId);
+      if (statusErr) throw statusErr;
+      return NextResponse.json({ success: true, message: 'Estado actualizado' });
+    }
 
     if (!items || !Array.isArray(items)) {
       return NextResponse.json(

@@ -350,7 +350,7 @@ export default function ChatInterface() {
         customer_id: customerData.id,
         phone: 'Por definir',
         items: orderItems,
-        status: 'Pendientes',
+        status: 'Pendiente',
         date: new Date().toLocaleDateString('es-ES'),
         total_items: orderItems.reduce((sum, i) => sum + i.quantity, 0)
       };
@@ -387,7 +387,7 @@ export default function ChatInterface() {
   };
 
   return (
-    <div className="flex flex-col h-screen max-w-md mx-auto bg-[#efeae2] shadow-xl relative overflow-hidden">
+    <div className="flex flex-col max-w-md mx-auto bg-[#efeae2] shadow-xl relative overflow-hidden" style={{ height: '100dvh' }}>
       {/* Header */}
       <header className="bg-[#00a884] text-white p-3 flex items-center justify-between z-10 shadow-md">
         <div className="flex items-center gap-3">
@@ -474,7 +474,7 @@ export default function ChatInterface() {
       </div>
 
       {/* Input Area */}
-      <div className="bg-[#f0f2f5] px-2 pt-2 pb-5 flex flex-col gap-2">
+      <div className="bg-[#f0f2f5] px-2 pt-2 flex flex-col gap-2" style={{ paddingBottom: 'max(20px, env(safe-area-inset-bottom, 20px))' }}>
         {/* Preview de imagen antes de enviar */}
         {previewImage && (
           <div className="bg-white rounded-xl mx-1 p-2 shadow-sm relative flex items-center gap-2">
