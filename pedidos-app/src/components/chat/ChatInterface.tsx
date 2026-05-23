@@ -2,8 +2,6 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 import { Camera, Send, Check, MoreVertical, Phone, ShoppingCart } from 'lucide-react';
-import { createWorker } from 'tesseract.js';
-import { supabase } from '@/lib/supabase';
 
 interface OrderItem {
   ref: string;
@@ -33,7 +31,6 @@ export default function ChatInterface() {
   const [inputText, setInputText] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
   const [isSending, setIsSending] = useState(false);
-  const [previewImage, setPreviewImage] = useState<{ file: File; url: string } | null>(null);
   const [orderItems, setOrderItems] = useState<OrderItem[]>([]);
   const [conversationState, setConversationState] = useState<ConversationState>('awaiting_name');
   const [customerData, setCustomerData] = useState<CustomerData>({ name: '', email: '' });
@@ -42,7 +39,7 @@ export default function ChatInterface() {
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, previewImage]);
+  }, [messages]);
 
   useEffect(() => {
     setMessages([{
@@ -54,76 +51,79 @@ export default function ChatInterface() {
     setConversationState('awaiting_name');
   }, []);
 
-  // ── Seleccionar imagen desde archivo ──
-  const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+  // ── Seleccionar imagen → auto-OCR inmediato ──
+  const handleImageSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    setPreviewImage({ file, url: URL.createObjectURL(file) });
     if (fileInputRef.current) fileInputRef.current.value = '';
+
+    const url = URL.createObjectURL(file);
+
+    // Mostrar imagen en el chat de inmediato
+    setMessages(prev => [...prev, {
+      id: Date.now().toString(),
+      type: 'user',
+      imageUrl: url,
+      timestamp: new Date()
+    }]);
+
+    // Indicador de lectura
+    setIsProcessing(true);
+    setMessages(prev => [...prev, {
+      id: 'ocr-loading',
+      type: 'bot',
+      content: '🔍 Leyendo referencia del producto...',
+      timestamp: new Date()
+    }]);
+
+    try {
+      // Enviar al servidor para OCR (más preciso que en el browser)
+      const formData = new FormData();
+      formData.append('image', file);
+      const res = await fetch('/api/ocr', { method: 'POST', body: formData });
+      const data = await res.json();
+
+      // Quitar el mensaje de "leyendo..."
+      setMessages(prev => prev.filter(m => m.id !== 'ocr-loading'));
+
+      if (data.success && data.data?.ref) {
+        const { ref, name } = data.data;
+        const notInInventory = data.warning;
+
+        setMessages(prev => [...prev, {
+          id: Date.now().toString(),
+          type: 'bot',
+          content: notInInventory
+            ? `⚠️ Detecté REF: ${ref} — pero no está en el inventario.\n¿Cuántas unidades igual? (o sube otra foto)`
+            : `✅ Detecté:\n📦 ${name}\n🏷️ REF: ${ref}\n\n¿Cuántas unidades?`,
+          metadata: { ref, name, pendingQuantity: true },
+          timestamp: new Date()
+        }]);
+      } else {
+        setMessages(prev => [...prev, {
+          id: Date.now().toString(),
+          type: 'bot',
+          content: '❌ No logré leer la referencia. Asegúrate de que el código sea visible y la foto esté nítida. Intenta de nuevo.',
+          timestamp: new Date()
+        }]);
+      }
+    } catch {
+      setMessages(prev => prev.filter(m => m.id !== 'ocr-loading'));
+      setMessages(prev => [...prev, {
+        id: Date.now().toString(),
+        type: 'bot',
+        content: 'Error al procesar la imagen. Intenta de nuevo.',
+        timestamp: new Date()
+      }]);
+    } finally {
+      setIsProcessing(false);
+    }
   };
 
   // ── Pegar imagen con Ctrl+V ──
-  const handlePaste = (e: React.ClipboardEvent<HTMLInputElement>) => {
-    const items = e.clipboardData?.items;
-    if (!items) return;
-    for (let i = 0; i < items.length; i++) {
-      if (items[i].type.indexOf('image') !== -1) {
-        const file = items[i].getAsFile();
-        if (file) setPreviewImage({ file, url: URL.createObjectURL(file) });
-        e.preventDefault();
-        break;
-      }
-    }
-  };
-
-  // ── Leer imagen con OCR ──
-  const runOCR = async (imageUrl: string): Promise<{ ref: string | null; rawText: string }> => {
-    const worker = await createWorker('spa');
-    const { data: { text } } = await worker.recognize(imageUrl);
-    await worker.terminate();
-
-    console.log('OCR texto:', text);
-
-    let detectedRef: string | null = null;
-    const refMatch = text.match(/REF[:\s]*([A-Za-z0-9\-]+)/i);
-    if (refMatch) {
-      detectedRef = refMatch[1].trim();
-    } else {
-      // Fallback: patrón alfanumérico con guión como "25872-2" o "PC-35"
-      const fallback = text.match(/\b([A-Z]{1,4}-?\d{1,5}(?:-\d{1,2})?)\b/);
-      if (fallback) detectedRef = fallback[1].trim();
-    }
-    return { ref: detectedRef, rawText: text };
-  };
-
-  // ── Buscar producto en Supabase ──
-  const lookupProduct = async (ref: string): Promise<string> => {
-    try {
-      const { data } = await supabase
-        .from('INVENTARIO EL PUNTAZO')
-        .select('Producto, Referencia')
-        .eq('Referencia', ref)
-        .single();
-
-      if (data?.Producto) return data.Producto;
-
-      // Búsqueda flexible si no hay coincidencia exacta
-      const { data: fuzzy } = await supabase
-        .from('INVENTARIO EL PUNTAZO')
-        .select('Producto, Referencia')
-        .ilike('Referencia', `%${ref}%`)
-        .limit(1);
-
-      if (fuzzy && fuzzy.length > 0) return fuzzy[0].Producto;
-    } catch (e) {
-      console.error('Supabase lookup error:', e);
-    }
-    return 'Producto Desconocido';
-  };
-
   // ── Enviar mensaje ──
   const handleSend = async () => {
-    if (!inputText.trim() && !previewImage) return;
+    if (!inputText.trim()) return;
 
     // ─── CAPTURA DE NOMBRE ───
     if (conversationState === 'awaiting_name') {
@@ -219,67 +219,17 @@ export default function ChatInterface() {
     }
 
     const currentText = inputText.trim();
-    const currentPreview = previewImage;
+    setInputText('');
 
-    // Mostrar mensaje del usuario en el chat
+    // Mostrar texto del usuario
     setMessages(prev => [...prev, {
       id: Date.now().toString(),
       type: 'user',
-      content: currentText || undefined,
-      imageUrl: currentPreview?.url,
+      content: currentText,
       timestamp: new Date()
     }]);
-    setInputText('');
-    setPreviewImage(null);
 
-    // ── CASO 1: Hay imagen → OCR + búsqueda en catálogo ──
-    if (currentPreview) {
-      setIsProcessing(true);
-      try {
-        const { ref: detectedRef } = await runOCR(currentPreview.url);
-
-        if (!detectedRef) {
-          setMessages(prev => [...prev, {
-            id: Date.now().toString(),
-            type: 'bot',
-            content: 'No logré leer la referencia en esta imagen. Asegúrate de que el texto REF sea visible.',
-            timestamp: new Date()
-          }]);
-          return;
-        }
-
-        const productName = await lookupProduct(detectedRef);
-        const quantityMatch = currentText.match(/\d+/);
-        const quantity = quantityMatch ? parseInt(quantityMatch[0]) : null;
-
-        if (quantity && quantity > 0) {
-          // Tenemos ref + cantidad → agregar directo al pedido
-          addToOrder(detectedRef, productName, quantity);
-        } else {
-          // Preguntar cantidad
-          setMessages(prev => [...prev, {
-            id: Date.now().toString(),
-            type: 'bot',
-            content: `Detecté:\nProducto: ${productName}\nREF: ${detectedRef}\n¿Cuántas unidades deseas?`,
-            metadata: { ref: detectedRef, name: productName, pendingQuantity: true },
-            timestamp: new Date()
-          }]);
-        }
-      } catch (err) {
-        console.error('Error procesando imagen:', err);
-        setMessages(prev => [...prev, {
-          id: Date.now().toString(),
-          type: 'bot',
-          content: 'Ocurrió un error al leer la imagen. Intenta de nuevo.',
-          timestamp: new Date()
-        }]);
-      } finally {
-        setIsProcessing(false);
-      }
-      return;
-    }
-
-    // ── CASO 2: Solo texto → responder cantidad pendiente ──
+    // ── Solo texto → responder cantidad pendiente ──
     const pendingBot = [...messages].reverse().find(
       m => m.type === 'bot' && m.metadata?.pendingQuantity
     );
@@ -475,25 +425,25 @@ export default function ChatInterface() {
 
       {/* Input Area */}
       <div className="bg-[#f0f2f5] px-2 pt-2 flex flex-col gap-2" style={{ paddingBottom: 'max(20px, env(safe-area-inset-bottom, 20px))' }}>
-        {/* Preview de imagen antes de enviar */}
-        {previewImage && (
-          <div className="bg-white rounded-xl mx-1 p-2 shadow-sm relative flex items-center gap-2">
-            <img src={previewImage.url} alt="Preview" className="h-20 w-20 object-contain rounded-lg border" />
-            <p className="text-xs text-gray-500 flex-1">Imagen lista. Escribe la cantidad y presiona enviar.</p>
-            <button
-              onClick={() => setPreviewImage(null)}
-              className="text-red-400 hover:text-red-600 font-bold text-lg leading-none"
-            >×</button>
-          </div>
-        )}
-
         <div className="flex items-end gap-2">
           <div className="flex-1 bg-white rounded-full px-4 py-2.5 flex items-center gap-2 shadow-sm min-h-[44px]">
-            <input type="file" accept="image/*" className="hidden" ref={fileInputRef} onChange={handleImageSelect} />
+            {/* Input oculto para seleccionar imagen — cámara + galería */}
+            <input
+              type="file"
+              accept="image/*"
+              className="hidden"
+              ref={fileInputRef}
+              onChange={handleImageSelect}
+            />
             <button
               onClick={() => fileInputRef.current?.click()}
-              disabled={conversationState !== 'ready'}
-              className={`flex-shrink-0 ${conversationState === 'ready' ? 'text-gray-400 hover:text-gray-600' : 'text-gray-200 cursor-not-allowed'}`}
+              disabled={conversationState !== 'ready' || isProcessing}
+              className={`flex-shrink-0 transition-colors ${
+                conversationState === 'ready' && !isProcessing
+                  ? 'text-[#00a884] hover:text-[#008f6f]'
+                  : 'text-gray-200 cursor-not-allowed'
+              }`}
+              title="Tomar foto o subir imagen"
             >
               <Camera size={22} />
             </button>
@@ -504,25 +454,27 @@ export default function ChatInterface() {
                   ? 'Escribe tu nombre...'
                   : conversationState === 'awaiting_email'
                   ? 'Escribe tu email...'
-                  : previewImage ? 'Escribe la cantidad...' : 'Pega imagen o escribe...'
+                  : isProcessing
+                  ? 'Analizando imagen...'
+                  : 'Escribe la cantidad o un mensaje...'
               }
               className="flex-1 bg-transparent outline-none text-sm text-gray-800 placeholder-gray-400"
               value={inputText}
               onChange={e => setInputText(e.target.value)}
               onKeyDown={e => e.key === 'Enter' && handleSend()}
-              onPaste={handlePaste}
+              disabled={isProcessing}
             />
           </div>
           <button
             onClick={handleSend}
-            disabled={!inputText.trim() && !previewImage}
+            disabled={!inputText.trim() || isProcessing}
             className={`p-3 rounded-full shadow-sm transition-all flex-shrink-0 ${
-              inputText.trim() || previewImage
+              inputText.trim() && !isProcessing
                 ? 'bg-[#00a884] text-white hover:bg-[#008f6f] active:scale-95'
-                : 'bg-[#00a884] text-white opacity-70'
+                : 'bg-[#00a884] text-white opacity-50 cursor-not-allowed'
             }`}
           >
-            {previewImage || inputText.trim() ? <Send size={20} /> : <Camera size={20} />}
+            <Send size={20} />
           </button>
         </div>
       </div>
