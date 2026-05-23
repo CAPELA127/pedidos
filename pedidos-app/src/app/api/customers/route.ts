@@ -1,10 +1,14 @@
 import { createClient } from '@supabase/supabase-js';
 import { NextRequest, NextResponse } from 'next/server';
 
+// Usamos service_role para bypassear RLS en operaciones del servidor
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+  process.env.SUPABASE_SERVICE_ROLE_KEY ?? process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
+
+// Tabla en Supabase: se intenta con minúscula primero
+const TABLE = 'customers';
 
 export async function GET(request: NextRequest) {
   try {
@@ -18,8 +22,8 @@ export async function GET(request: NextRequest) {
     }
 
     const { data, error } = await supabase
-      .from('customers')
-      .select('*')
+      .from(TABLE)
+      .select('id, name, email')
       .eq('email', email)
       .single();
 
@@ -51,34 +55,39 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Buscar cliente existente
+    // Buscar cliente existente por email
     const { data: existing } = await supabase
-      .from('customers')
-      .select('id')
+      .from(TABLE)
+      .select('id, name, email')
       .eq('email', email)
       .single();
 
     if (existing) {
       return NextResponse.json({
         success: true,
-        customer: { ...existing, name, email, isNew: false }
+        customer: { id: existing.id, name: existing.name, email: existing.email, isNew: false }
       });
     }
 
-    // Crear nuevo cliente
+    // Crear nuevo cliente — solo name y email, phone es opcional
     const { data: newCustomer, error } = await supabase
-      .from('customers')
+      .from(TABLE)
       .insert([{ name, email }])
-      .select()
+      .select('id, name, email')
       .single();
 
-    if (error) throw error;
+    if (error) {
+      // Log completo para depuración
+      console.error('Supabase insert error:', JSON.stringify(error));
+      throw new Error(error.message || 'No se pudo crear el cliente en Supabase');
+    }
 
     return NextResponse.json({
       success: true,
-      customer: { ...newCustomer, isNew: true }
+      customer: { id: newCustomer.id, name: newCustomer.name, email: newCustomer.email, isNew: true }
     });
   } catch (error) {
+    console.error('POST /api/customers error:', error);
     return NextResponse.json(
       { success: false, message: error instanceof Error ? error.message : 'Error al guardar cliente' },
       { status: 500 }
