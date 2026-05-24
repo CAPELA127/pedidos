@@ -8,6 +8,7 @@ interface OrderItem {
   ref: string;
   name: string;
   quantity: number;
+  price?: number;
 }
 
 interface Message {
@@ -16,7 +17,7 @@ interface Message {
   content?: string;
   imageUrl?: string;
   timestamp: Date;
-  metadata?: { ref?: string; name?: string; pendingQuantity?: boolean };
+  metadata?: { ref?: string; name?: string; price?: number; pendingQuantity?: boolean };
 }
 
 type ConversationState = 'awaiting_name' | 'awaiting_email' | 'ready';
@@ -90,7 +91,7 @@ export default function ChatInterface() {
       setMessages(prev => prev.filter(m => m.id !== loadingMsgId));
 
       if (data.success && data.data?.ref) {
-        const { ref, name } = data.data;
+        const { ref, name, price } = data.data;
         const notInInventory = data.warning;
         const confidence = data.confidence || 85;
 
@@ -99,13 +100,16 @@ export default function ChatInterface() {
           ? `(${(processingTime / 1000).toFixed(1)}s)`
           : '✨';
 
+        // Formato de precio
+        const priceLabel = price ? `\n💰 COP $${price.toLocaleString('es-CO')}` : '';
+
         setMessages(prev => [...prev, {
           id: Date.now().toString(),
           type: 'bot',
           content: notInInventory
-            ? `⚠️ Detecté REF: ${ref} ${timeLabel}\nno en inventario.\n¿Cuántas unidades? (o intenta otra foto)`
-            : `✅ ${name}\n🏷️ ${ref} ${timeLabel}\n\n¿Cantidad?`,
-          metadata: { ref, name, pendingQuantity: true },
+            ? `⚠️ REF: ${ref} ${timeLabel}${priceLabel}\n⚠️ No en inventario\n¿Cuántas unidades?`
+            : `✅ ${name}\n🏷️ ${ref}${priceLabel} ${timeLabel}\n\n¿Cantidad?`,
+          metadata: { ref, name, price: price || undefined, pendingQuantity: true },
           timestamp: new Date()
         }]);
       } else {
@@ -253,7 +257,8 @@ export default function ChatInterface() {
         addToOrder(
           pendingBot.metadata.ref,
           pendingBot.metadata.name || 'Producto',
-          quantity
+          quantity,
+          pendingBot.metadata.price
         );
         // Marcar el mensaje bot como resuelto
         setMessages(prev =>
@@ -275,7 +280,7 @@ export default function ChatInterface() {
   };
 
   // ── Agregar item al pedido (suma si ya existe) ──
-  const addToOrder = (ref: string, name: string, quantity: number) => {
+  const addToOrder = (ref: string, name: string, quantity: number, price?: number) => {
     setOrderItems(prev => {
       const existing = prev.find(i => i.ref === ref);
       if (existing) {
@@ -283,13 +288,14 @@ export default function ChatInterface() {
           i.ref === ref ? { ...i, quantity: i.quantity + quantity } : i
         );
       }
-      return [...prev, { ref, name, quantity }];
+      return [...prev, { ref, name, quantity, price }];
     });
 
+    const priceLabel = price ? ` @ COP $${price.toLocaleString('es-CO')}` : '';
     setMessages(prev => [...prev, {
       id: Date.now().toString(),
       type: 'system',
-      content: `✅ Agregado: ${quantity} und de ${name} (REF ${ref})`,
+      content: `✅ Agregado: ${quantity} und de ${name}${priceLabel}`,
       timestamp: new Date()
     }]);
   };
@@ -410,7 +416,7 @@ export default function ChatInterface() {
       </div>
 
       {/* Order Summary Bar */}
-      <div className="bg-white border-t border-gray-100 px-3 py-2 flex justify-between items-center shadow-md">
+      <div className="bg-white border-t border-gray-100 px-3 py-2 flex justify-between items-center shadow-md flex-wrap gap-2">
         <div className="flex items-center gap-1.5 text-sm text-gray-600">
           <ShoppingCart size={16} className="text-[#00a884]" />
           <span className="font-medium text-[#00a884]">{orderItems.length}</span>
@@ -418,6 +424,11 @@ export default function ChatInterface() {
           {orderItems.length > 0 && (
             <span className="text-gray-400">
               ({orderItems.reduce((s, i) => s + i.quantity, 0)} und)
+            </span>
+          )}
+          {orderItems.some(i => i.price) && (
+            <span className="text-[#00a884] font-semibold ml-2">
+              COP ${orderItems.reduce((total, i) => total + ((i.price || 0) * i.quantity), 0).toLocaleString('es-CO')}
             </span>
           )}
         </div>

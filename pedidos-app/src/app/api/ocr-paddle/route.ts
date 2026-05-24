@@ -71,7 +71,7 @@ async function compressImage(buffer: Buffer): Promise<Buffer> {
   }
 }
 
-// Extrae referencias usando patrones regex (igual que antes)
+// Extrae referencias usando patrones regex
 function extractRefs(text: string): string[] {
   const candidates: string[] = [];
 
@@ -93,6 +93,36 @@ function extractRefs(text: string): string[] {
   if (numOnly) candidates.push(...numOnly);
 
   return [...new Set(candidates.map(c => c.trim().toUpperCase()))];
+}
+
+// Extrae precio (COP, $, o número con puntos/comas)
+function extractPrice(text: string): number | null {
+  // Patrón 1: COP 25.200 o COP25200
+  const copMatch = text.match(/COP[\s]*(\d{1,3}(?:[.,]\d{3})*)/i);
+  if (copMatch) {
+    const priceStr = copMatch[1].replace(/[.,]/g, '');
+    const price = parseInt(priceStr, 10);
+    if (price > 0) return price;
+  }
+
+  // Patrón 2: $ 25.200 o $25200
+  const dollarMatch = text.match(/\$[\s]*(\d{1,3}(?:[.,]\d{3})*)/);
+  if (dollarMatch) {
+    const priceStr = dollarMatch[1].replace(/[.,]/g, '');
+    const price = parseInt(priceStr, 10);
+    if (price > 0) return price;
+  }
+
+  // Patrón 3: Números grandes (probablemente precios) con separador
+  // Ej: 25.200 o 25,200 (más de 4 dígitos)
+  const largeNum = text.match(/\b(\d{2,3}[.,]\d{3})\b/);
+  if (largeNum) {
+    const priceStr = largeNum[1].replace(/[.,]/g, '');
+    const price = parseInt(priceStr, 10);
+    if (price > 1000) return price; // Asume que es precio si > 1000
+  }
+
+  return null;
 }
 
 export async function POST(req: Request) {
@@ -124,7 +154,10 @@ export async function POST(req: Request) {
     console.log('OCR text:', text);
 
     const candidates = extractRefs(text);
+    const price = extractPrice(text);
+
     console.log('Ref candidates:', candidates);
+    console.log('Price detected:', price);
 
     if (candidates.length === 0) {
       return NextResponse.json({
@@ -149,7 +182,12 @@ export async function POST(req: Request) {
         const processingTime = Date.now() - startTime;
         return NextResponse.json({
           success: true,
-          data: { ref: exact[0].Referencia, name: exact[0].Producto, rawText: text },
+          data: {
+            ref: exact[0].Referencia,
+            name: exact[0].Producto,
+            price: price || null,
+            rawText: text
+          },
           confidence: 95,
           processingTime,
         });
@@ -166,7 +204,12 @@ export async function POST(req: Request) {
         const processingTime = Date.now() - startTime;
         return NextResponse.json({
           success: true,
-          data: { ref: fuzzy[0].Referencia, name: fuzzy[0].Producto, rawText: text },
+          data: {
+            ref: fuzzy[0].Referencia,
+            name: fuzzy[0].Producto,
+            price: price || null,
+            rawText: text
+          },
           confidence: 75,
           processingTime,
         });
@@ -177,7 +220,12 @@ export async function POST(req: Request) {
     const processingTime = Date.now() - startTime;
     return NextResponse.json({
       success: true,
-      data: { ref: candidates[0], name: 'Producto Desconocido', rawText: text },
+      data: {
+        ref: candidates[0],
+        name: 'Producto Desconocido',
+        price: price || null,
+        rawText: text
+      },
       confidence: 60,
       processingTime,
       warning: 'Referencia no encontrada en inventario',
