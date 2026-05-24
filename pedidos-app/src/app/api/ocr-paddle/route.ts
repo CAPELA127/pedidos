@@ -1,135 +1,35 @@
+import Anthropic from '@anthropic-ai/sdk';
 import { getSupabase } from '@/lib/supabase-server';
 import { NextResponse } from 'next/server';
-import sharp from 'sharp';
-import { createWorker } from 'tesseract.js';
 
 export const dynamic = 'force-dynamic';
-export const maxDuration = 45; // Optimizado: OCR rápido con compresión agresiva
+export const maxDuration = 30;
 
-// Fallback: Si Paddle no está disponible, usa Tesseract
-const USE_TESSERACT_FALLBACK = true;
+const anthropic = new Anthropic({
+  apiKey: process.env.ANTHROPIC_API_KEY,
+});
 
-// Validar imagen
 function validateImage(buffer: Buffer, filename: string) {
-  const maxSize = 5 * 1024 * 1024; // 5MB
+  const maxSize = 10 * 1024 * 1024; // 10MB
   if (buffer.length > maxSize) {
-    throw new Error(`Imagen muy grande. Máximo 5MB, tienes ${(buffer.length / 1024 / 1024).toFixed(1)}MB`);
+    throw new Error(`Imagen muy grande. Máximo 10MB`);
   }
 
-  const validFormats = ['image/jpeg', 'image/png', 'image/webp'];
   const ext = filename.split('.').pop()?.toLowerCase();
-  const mimeType = `image/${ext}`;
-
-  if (!validFormats.includes(mimeType)) {
+  const validExts = ['jpg', 'jpeg', 'png', 'webp', 'gif'];
+  if (!ext || !validExts.includes(ext)) {
     throw new Error(`Formato no soportado. Usa JPG, PNG o WebP`);
   }
 
   return true;
 }
 
-// Crop optimizado para VELOCIDAD (zona centro-inferior para referencias)
-async function cropToReferenceZone(imagePath: string): Promise<Buffer> {
-  const image = sharp(imagePath);
-  const metadata = await image.metadata();
-
-  if (!metadata.width || !metadata.height) {
-    return (await image.toBuffer()) as Buffer;
-  }
-
-  const width = metadata.width;
-  const height = metadata.height;
-
-  // Crop más pequeño: solo centro inferior (donde está la referencia + precio)
-  // Esto reduce área a procesar en ~70%
-  const cropWidth = Math.floor(width * 0.85);
-  const cropHeight = Math.floor(height * 0.35);
-  const left = Math.floor((width - cropWidth) / 2);
-  const top = Math.floor(height * 0.35); // Abajo a mitad
-
-  try {
-    return await image
-      .extract({ left, top, width: cropWidth, height: cropHeight })
-      .toBuffer() as Buffer;
-  } catch {
-    return (await image.toBuffer()) as Buffer;
-  }
-}
-
-// Compresión agresiva para OCR RÁPIDO (sacrificar calidad por velocidad)
-async function compressImage(buffer: Buffer): Promise<Buffer> {
-  try {
-    // Comprimir agresivamente: 1024x768 es suficiente para OCR
-    // Esto hace OCR 3-4x más rápido
-    return await sharp(buffer)
-      .resize(1024, 768, { fit: 'inside', withoutEnlargement: true })
-      .jpeg({ quality: 75 }) // Calidad media suficiente
-      .toBuffer() as Buffer;
-  } catch (e) {
-    console.error('Compression error:', e);
-    // Si falla, intentar con tamaño aún más pequeño
-    try {
-      return await sharp(buffer)
-        .resize(800, 600, { fit: 'inside', withoutEnlargement: true })
-        .jpeg({ quality: 60 })
-        .toBuffer() as Buffer;
-    } catch {
-      return buffer;
-    }
-  }
-}
-
-// Extrae referencias usando patrones regex
-function extractRefs(text: string): string[] {
-  const candidates: string[] = [];
-
-  const explicitRef = text.match(/REF[:\s.#]*([A-Za-z0-9][A-Za-z0-9\-]{2,15})/gi);
-  if (explicitRef) {
-    explicitRef.forEach(m => {
-      const val = m.replace(/^REF[:\s.#]*/i, '').trim();
-      if (val) candidates.push(val);
-    });
-  }
-
-  const numericRef = text.match(/\b\d{3,7}-\d{1,4}\b/g);
-  if (numericRef) candidates.push(...numericRef);
-
-  const alphaRef = text.match(/\b[A-Z]{1,4}-\d{2,6}\b/g);
-  if (alphaRef) candidates.push(...alphaRef);
-
-  const numOnly = text.match(/\b\d{5,8}\b/g);
-  if (numOnly) candidates.push(...numOnly);
-
-  return [...new Set(candidates.map(c => c.trim().toUpperCase()))];
-}
-
-// Extrae precio (COP, $, o número con puntos/comas)
-function extractPrice(text: string): number | null {
-  // Patrón 1: COP 25.200 o COP25200
-  const copMatch = text.match(/COP[\s]*(\d{1,3}(?:[.,]\d{3})*)/i);
-  if (copMatch) {
-    const priceStr = copMatch[1].replace(/[.,]/g, '');
-    const price = parseInt(priceStr, 10);
-    if (price > 0) return price;
-  }
-
-  // Patrón 2: $ 25.200 o $25200
-  const dollarMatch = text.match(/\$[\s]*(\d{1,3}(?:[.,]\d{3})*)/);
-  if (dollarMatch) {
-    const priceStr = dollarMatch[1].replace(/[.,]/g, '');
-    const price = parseInt(priceStr, 10);
-    if (price > 0) return price;
-  }
-
-  // Patrón 3: Números grandes (probablemente precios) con separador
-  // Ej: 25.200 o 25,200 (más de 4 dígitos)
-  const largeNum = text.match(/\b(\d{2,3}[.,]\d{3})\b/);
-  if (largeNum) {
-    const priceStr = largeNum[1].replace(/[.,]/g, '');
-    const price = parseInt(priceStr, 10);
-    if (price > 1000) return price; // Asume que es precio si > 1000
-  }
-
-  return null;
+function getMimeType(filename: string): 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp' {
+  const ext = filename.split('.').pop()?.toLowerCase();
+  if (ext === 'png') return 'image/png';
+  if (ext === 'gif') return 'image/gif';
+  if (ext === 'webp') return 'image/webp';
+  return 'image/jpeg';
 }
 
 export async function POST(req: Request) {
@@ -147,128 +47,123 @@ export async function POST(req: Request) {
     const buffer = Buffer.from(arrayBuffer);
     validateImage(buffer, image.name);
 
-    const compressedBuffer = await compressImage(buffer);
+    const base64Image = buffer.toString('base64');
+    const mimeType = getMimeType(image.name);
 
-    // OCR con Tesseract optimizado (rápido + preciso)
-    const worker = await createWorker(['spa', 'eng']);
+    const response = await anthropic.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 300,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'image',
+              source: {
+                type: 'base64',
+                media_type: mimeType,
+                data: base64Image,
+              },
+            },
+            {
+              type: 'text',
+              text: `Analiza esta imagen de un producto y extrae:
+1. REFERENCIA: El código de referencia del producto (puede ser formato como "4031-3", "25872-2", "ABC-123", número solo, etc.)
+2. PRECIO: El precio en pesos colombianos si aparece (puede estar como "COP 25.200", "$25200", "25.200", etc.)
 
-    await worker.setParameters({
-      tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-:. $',
+Responde SOLO en este formato JSON, sin explicaciones:
+{"ref": "CODIGO_AQUI", "price": NUMERO_O_NULL}
+
+Si no encuentras referencia, usa null. Si no encuentras precio, usa null.
+Ejemplos de referencias válidas: "4031-3", "25872", "AB-456", "123456"`,
+            },
+          ],
+        },
+      ],
     });
 
-    const { data: { text } } = await worker.recognize(compressedBuffer);
-    await worker.terminate();
+    const rawText = response.content[0].type === 'text' ? response.content[0].text : '';
+    console.log('Claude Vision response:', rawText);
 
-    console.log('OCR text:', text);
+    let ref: string | null = null;
+    let price: number | null = null;
 
-    const candidates = extractRefs(text);
-    const price = extractPrice(text);
-
-    console.log('Ref candidates:', candidates);
-    console.log('Price detected:', price);
-
-    if (candidates.length === 0) {
-      // Si no encontró referencia clara, aceptar cualquier número como referencia
-      const anyNumber = text.match(/\d{3,}/);
-      if (anyNumber) {
-        const ref = anyNumber[0].substring(0, 10); // Tomar primeros 10 dígitos
-        return NextResponse.json({
-          success: true,
-          data: {
-            ref: ref,
-            name: 'Producto Desconocido',
-            price: price || null,
-            rawText: text
-          },
-          confidence: 40, // Confianza baja pero válida
-          processingTime: Date.now() - startTime,
-          warning: 'Referencia detectada con baja confianza',
-        });
+    try {
+      const jsonMatch = rawText.match(/\{[^}]+\}/);
+      if (jsonMatch) {
+        const parsed = JSON.parse(jsonMatch[0]);
+        ref = parsed.ref && parsed.ref !== 'null' ? String(parsed.ref).trim().toUpperCase() : null;
+        price = parsed.price && typeof parsed.price === 'number' ? parsed.price : null;
       }
+    } catch {
+      console.log('JSON parse failed, trying regex on raw text');
+      const refMatch = rawText.match(/["']ref["']\s*:\s*["']([^"']+)["']/i);
+      if (refMatch) ref = refMatch[1].trim().toUpperCase();
+      const priceMatch = rawText.match(/["']price["']\s*:\s*(\d+)/i);
+      if (priceMatch) price = parseInt(priceMatch[1], 10);
+    }
 
+    console.log('Extracted ref:', ref, 'price:', price);
+
+    if (!ref) {
       return NextResponse.json({
         success: false,
-        error: 'No se detectó ninguna referencia',
-        rawText: text,
+        error: 'No se detectó ninguna referencia en la imagen',
+        rawText,
       });
     }
 
     const supabase = getSupabase();
 
-    // Buscar en inventario
-    for (const ref of candidates) {
-      // Exacta
-      const { data: exact } = await supabase
-        .from('INVENTARIO EL PUNTAZO')
-        .select('Referencia, Producto')
-        .eq('Referencia', ref)
-        .limit(1);
+    // Búsqueda exacta
+    const { data: exact } = await supabase
+      .from('INVENTARIO EL PUNTAZO')
+      .select('Referencia, Producto')
+      .eq('Referencia', ref)
+      .limit(1);
 
-      if (exact && exact.length > 0) {
-        const processingTime = Date.now() - startTime;
-        return NextResponse.json({
-          success: true,
-          data: {
-            ref: exact[0].Referencia,
-            name: exact[0].Producto,
-            price: price || null,
-            rawText: text
-          },
-          confidence: 95,
-          processingTime,
-        });
-      }
-
-      // Fuzzy
-      const { data: fuzzy } = await supabase
-        .from('INVENTARIO EL PUNTAZO')
-        .select('Referencia, Producto')
-        .ilike('Referencia', `%${ref}%`)
-        .limit(1);
-
-      if (fuzzy && fuzzy.length > 0) {
-        const processingTime = Date.now() - startTime;
-        return NextResponse.json({
-          success: true,
-          data: {
-            ref: fuzzy[0].Referencia,
-            name: fuzzy[0].Producto,
-            price: price || null,
-            rawText: text
-          },
-          confidence: 75,
-          processingTime,
-        });
-      }
+    if (exact && exact.length > 0) {
+      return NextResponse.json({
+        success: true,
+        data: { ref: exact[0].Referencia, name: exact[0].Producto, price, rawText },
+        confidence: 95,
+        processingTime: Date.now() - startTime,
+      });
     }
 
-    // Fallback: sin inventario
-    const processingTime = Date.now() - startTime;
+    // Búsqueda fuzzy
+    const { data: fuzzy } = await supabase
+      .from('INVENTARIO EL PUNTAZO')
+      .select('Referencia, Producto')
+      .ilike('Referencia', `%${ref}%`)
+      .limit(1);
+
+    if (fuzzy && fuzzy.length > 0) {
+      return NextResponse.json({
+        success: true,
+        data: { ref: fuzzy[0].Referencia, name: fuzzy[0].Producto, price, rawText },
+        confidence: 75,
+        processingTime: Date.now() - startTime,
+      });
+    }
+
+    // Fallback: referencia detectada pero no en inventario
     return NextResponse.json({
       success: true,
-      data: {
-        ref: candidates[0],
-        name: 'Producto Desconocido',
-        price: price || null,
-        rawText: text
-      },
+      data: { ref, name: 'Producto Desconocido', price, rawText },
       confidence: 60,
-      processingTime,
+      processingTime: Date.now() - startTime,
       warning: 'Referencia no encontrada en inventario',
     });
+
   } catch (error) {
     const processingTime = Date.now() - startTime;
     const errorMsg = error instanceof Error ? error.message : 'Error procesando imagen';
-    console.error('OCR error:', errorMsg, error);
+    console.error('OCR error:', errorMsg);
 
-    // SIEMPRE retornar JSON válido
     return NextResponse.json(
-      {
-        success: false,
-        error: errorMsg,
-        processingTime,
-      },
-      { status: 200 } // Retornar 200 para evitar parsing error en cliente
+      { success: false, error: errorMsg, processingTime },
+      { status: 200 }
     );
   }
 }
