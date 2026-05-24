@@ -179,6 +179,15 @@ export default function Dashboard() {
 
   const handleExport = () => window.open('/api/export', '_blank');
 
+  const downloadPDF = (orderId: string) => {
+    const link = document.createElement('a');
+    link.href = `/api/orders/${orderId}/pdf`;
+    link.download = `pedido-${orderId}.pdf`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
   const TABS = [
     { key: 'Pendiente', label: 'Pendientes', Icon: Package, color: 'text-orange-500' },
     { key: 'Empacado', label: 'Empacados', Icon: CheckCircle, color: 'text-blue-500' },
@@ -504,7 +513,13 @@ export default function Dashboard() {
               )}
 
               {/* Botones edición */}
-              <div className="flex gap-2 justify-end">
+              <div className="flex gap-2 justify-end flex-wrap">
+                <button
+                  onClick={() => downloadPDF(selectedOrder.id)}
+                  className="px-4 py-2 bg-green-50 text-green-600 border border-green-200 rounded-lg text-sm font-medium hover:bg-green-100 flex items-center gap-1.5"
+                >
+                  <Download size={14} /> Descargar PDF
+                </button>
                 <button onClick={closeModal} className="px-4 py-2 border rounded-lg text-gray-700 text-sm font-medium hover:bg-gray-50">
                   Cerrar
                 </button>
