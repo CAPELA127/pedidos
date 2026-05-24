@@ -51,6 +51,7 @@ export default function ChatInterface() {
   const [conversationState, setConversationState] = useState<ConversationState>('awaiting_name');
   const [customerData, setCustomerData] = useState<CustomerData>({ name: '', email: '' });
   const [ocrProcessingTime, setOcrProcessingTime] = useState(0);
+  const [selectedImage, setSelectedImage] = useState<{ url: string; file?: File } | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -701,7 +702,12 @@ export default function ChatInterface() {
             ) : (
               <div className={`max-w-[82%] rounded-2xl px-3 py-2 shadow-sm ${msg.type === 'user' ? 'bg-[#d9fdd3] rounded-tr-sm' : 'bg-white rounded-tl-sm'}`}>
                 {msg.imageUrl && (
-                  <img src={msg.imageUrl} alt="Producto" className="rounded-lg mb-1 max-h-72 w-auto object-contain" />
+                  <img
+                    src={msg.imageUrl}
+                    alt="Producto"
+                    className="rounded-lg mb-1 max-h-72 w-auto object-contain cursor-pointer hover:opacity-80 transition-opacity"
+                    onClick={() => setSelectedImage({ url: msg.imageUrl! })}
+                  />
                 )}
                 {msg.content && (
                   <p className="text-sm text-gray-800 whitespace-pre-wrap leading-snug">{msg.content}</p>
@@ -813,6 +819,59 @@ export default function ChatInterface() {
           </button>
         </div>
       </div>
+
+      {/* Modal Ver Imagen */}
+      {selectedImage && (
+        <div
+          className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4"
+          onClick={() => setSelectedImage(null)}
+        >
+          <div
+            className="relative bg-white rounded-2xl shadow-2xl max-w-2xl max-h-[90vh] flex items-center justify-center"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Botón cerrar */}
+            <button
+              onClick={() => setSelectedImage(null)}
+              className="absolute top-4 right-4 bg-white rounded-full p-2 shadow-lg hover:bg-gray-100 z-10"
+            >
+              <svg
+                className="w-6 h-6"
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M6 18L18 6M6 6l12 12"
+                />
+              </svg>
+            </button>
+
+            {/* Imagen ampliada */}
+            <img
+              src={selectedImage.url}
+              alt="Vista ampliada"
+              className="max-w-full max-h-[85vh] object-contain rounded-xl"
+            />
+
+            {/* Info y acciones */}
+            <div className="absolute bottom-4 left-4 right-4 bg-white/95 backdrop-blur rounded-lg p-3 flex gap-2 justify-between items-center">
+              <span className="text-xs text-gray-600 font-medium">
+                Click para cerrar o usar botón X
+              </span>
+              <button
+                onClick={() => setSelectedImage(null)}
+                className="bg-[#00a884] text-white px-3 py-1.5 rounded-lg text-xs font-medium hover:bg-[#008f6f] transition-colors"
+              >
+                Cerrar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
