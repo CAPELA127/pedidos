@@ -109,6 +109,8 @@ export default function ChatInterface() {
         const notInInventory = data.warning;
         const confidence = data.confidence || 85;
 
+        console.log('OCR Success:', { ref, name, price, confidence, notInInventory });
+
         // Mensaje mejorado con tiempo de procesamiento
         const timeLabel = processingTime > 1000
           ? `(${(processingTime / 1000).toFixed(1)}s)`
@@ -426,46 +428,54 @@ export default function ChatInterface() {
     );
 
     if (pendingPriceBot?.metadata?.ref) {
-      const isOk = /^(si|sí|ok|okay|s|vale|claro|listo|confirmado?)$/i.test(currentText);
-      const priceMatch = currentText.match(/\d+/);
-      const newPrice = priceMatch ? parseInt(priceMatch[0]) : null;
+      try {
+        const isOk = /^(si|sí|ok|okay|s|vale|claro|listo|confirmado|yes|y)$/i.test(currentText.trim());
+        const priceMatch = currentText.match(/\d{2,}/);
+        const newPrice = priceMatch ? parseInt(priceMatch[0], 10) : null;
 
-      if (isOk) {
-        // Usuario confirma el precio, pasar a cantidad
-        const updatedPrice = pendingPriceBot.metadata.price;
-        setMessages(prev =>
-          prev.map(m =>
-            m.id === pendingPriceBot.id
-              ? { ...m, metadata: { ...m.metadata, pendingPriceConfirm: false, pendingQuantity: true } }
-              : m
-          )
-        );
+        if (isOk) {
+          // Usuario confirma el precio, pasar a cantidad
+          setMessages(prev =>
+            prev.map(m =>
+              m.id === pendingPriceBot.id
+                ? { ...m, metadata: { ...m.metadata, pendingPriceConfirm: false, pendingQuantity: true } }
+                : m
+            )
+          );
+          setMessages(prev => [...prev, {
+            id: Date.now().toString(),
+            type: 'bot',
+            content: '✅ Perfecto. ¿Cuántas unidades?',
+            timestamp: new Date()
+          }]);
+        } else if (newPrice && newPrice > 0) {
+          // Usuario proporciona nuevo precio
+          setMessages(prev =>
+            prev.map(m =>
+              m.id === pendingPriceBot.id
+                ? { ...m, metadata: { ...m.metadata, price: newPrice, pendingPriceConfirm: false, pendingQuantity: true } }
+                : m
+            )
+          );
+          setMessages(prev => [...prev, {
+            id: Date.now().toString(),
+            type: 'bot',
+            content: `✅ Precio actualizado a COP $${newPrice.toLocaleString('es-CO')}. ¿Cuántas unidades?`,
+            timestamp: new Date()
+          }]);
+        } else {
+          setMessages(prev => [...prev, {
+            id: Date.now().toString(),
+            type: 'bot',
+            content: 'No entendí. Escribe:\n✅ (para confirmar) o\n💰 (número para cambiar precio)',
+            timestamp: new Date()
+          }]);
+        }
+      } catch (error) {
         setMessages(prev => [...prev, {
           id: Date.now().toString(),
           type: 'bot',
-          content: '✅ Perfecto. ¿Cuántas unidades?',
-          timestamp: new Date()
-        }]);
-      } else if (newPrice && newPrice > 0) {
-        // Usuario proporciona nuevo precio
-        setMessages(prev =>
-          prev.map(m =>
-            m.id === pendingPriceBot.id
-              ? { ...m, metadata: { ...m.metadata, price: newPrice, pendingPriceConfirm: false, pendingQuantity: true } }
-              : m
-          )
-        );
-        setMessages(prev => [...prev, {
-          id: Date.now().toString(),
-          type: 'bot',
-          content: `✅ Precio actualizado a COP $${newPrice.toLocaleString('es-CO')}. ¿Cuántas unidades?`,
-          timestamp: new Date()
-        }]);
-      } else {
-        setMessages(prev => [...prev, {
-          id: Date.now().toString(),
-          type: 'bot',
-          content: 'No entendí. Escribe:\n✅ (para confirmar el precio) o\n💰 (un número para cambiar el precio)',
+          content: 'Hubo un error. Escribe "si" para confirmar o un número para cambiar el precio.',
           timestamp: new Date()
         }]);
       }

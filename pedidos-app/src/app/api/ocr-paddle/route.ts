@@ -28,6 +28,7 @@ function validateImage(buffer: Buffer, filename: string) {
 }
 
 // Crop automático a zona probable de referencia (arriba + centro)
+// Mejorado: área más grande para mejor OCR
 async function cropToReferenceZone(imagePath: string): Promise<Buffer> {
   const image = sharp(imagePath);
   const metadata = await image.metadata();
@@ -39,11 +40,11 @@ async function cropToReferenceZone(imagePath: string): Promise<Buffer> {
   const width = metadata.width;
   const height = metadata.height;
 
-  // Crop: 60% del ancho, 40% del alto, centrado horizontalmente, en la parte superior
-  const cropWidth = Math.floor(width * 0.6);
-  const cropHeight = Math.floor(height * 0.4);
+  // Crop mejorado: 80% del ancho, 50% del alto, para capturar más contexto
+  const cropWidth = Math.floor(width * 0.8);
+  const cropHeight = Math.floor(height * 0.5);
   const left = Math.floor((width - cropWidth) / 2);
-  const top = Math.floor(height * 0.1); // 10% desde arriba
+  const top = Math.floor(height * 0.05); // 5% desde arriba
 
   try {
     return await image
@@ -55,16 +56,16 @@ async function cropToReferenceZone(imagePath: string): Promise<Buffer> {
   }
 }
 
-// Compresión automática si > 1MB
+// Compresión optimizada para mejor OCR (aumentar calidad)
 async function compressImage(buffer: Buffer): Promise<Buffer> {
-  if (buffer.length <= 1024 * 1024) {
-    return buffer;
+  if (buffer.length <= 2 * 1024 * 1024) {
+    return buffer; // Permitir hasta 2MB sin comprimir
   }
 
   try {
     return await sharp(buffer)
-      .resize(1920, 1440, { fit: 'inside', withoutEnlargement: true })
-      .jpeg({ quality: 80 })
+      .resize(2400, 1800, { fit: 'inside', withoutEnlargement: true })
+      .jpeg({ quality: 90 }) // Calidad más alta para OCR
       .toBuffer() as Buffer;
   } catch {
     return buffer;
@@ -142,10 +143,11 @@ export async function POST(req: Request) {
 
     const compressedBuffer = await compressImage(buffer);
 
-    // OCR con Tesseract optimizado (más rápido que antes)
+    // OCR con Tesseract optimizado (rápido + preciso)
     const worker = await createWorker(['spa', 'eng']);
+
     await worker.setParameters({
-      tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-:. ',
+      tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-:. $',
     });
 
     const { data: { text } } = await worker.recognize(compressedBuffer);
