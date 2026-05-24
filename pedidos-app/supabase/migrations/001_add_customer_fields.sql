@@ -2,13 +2,23 @@
 -- Description: Adds phone, local_name, city, neighborhood, address fields to customers table
 -- Run this in Supabase SQL Editor
 
--- Add new columns to customers table
+-- Add new columns to customers table (each ADD COLUMN separately)
 ALTER TABLE customers
-ADD COLUMN IF NOT EXISTS phone TEXT,
-ADD COLUMN IF NOT EXISTS local_name TEXT,
-ADD COLUMN IF NOT EXISTS city TEXT,
-ADD COLUMN IF NOT EXISTS neighborhood TEXT,
-ADD COLUMN IF NOT EXISTS address TEXT,
+ADD COLUMN IF NOT EXISTS phone TEXT;
+
+ALTER TABLE customers
+ADD COLUMN IF NOT EXISTS local_name TEXT;
+
+ALTER TABLE customers
+ADD COLUMN IF NOT EXISTS city TEXT;
+
+ALTER TABLE customers
+ADD COLUMN IF NOT EXISTS neighborhood TEXT;
+
+ALTER TABLE customers
+ADD COLUMN IF NOT EXISTS address TEXT;
+
+ALTER TABLE customers
 ADD COLUMN IF NOT EXISTS address_normalized TEXT;
 
 -- Create unique index on local_name + address_normalized
