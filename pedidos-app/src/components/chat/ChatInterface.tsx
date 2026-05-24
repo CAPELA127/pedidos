@@ -91,10 +91,20 @@ export default function ChatInterface() {
     }]);
 
     try {
-      // Enviar al servidor para OCR
+      // Enviar al servidor para OCR (con timeout de 90 segundos)
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 90000);
+
       const formData = new FormData();
       formData.append('image', file);
-      const res = await fetch('/api/ocr-paddle', { method: 'POST', body: formData });
+
+      const res = await fetch('/api/ocr-paddle', {
+        method: 'POST',
+        body: formData,
+        signal: controller.signal
+      });
+      clearTimeout(timeoutId);
+
       const data = await res.json();
 
       // Calcular tiempo de procesamiento
@@ -151,10 +161,20 @@ export default function ChatInterface() {
       }
     } catch (error) {
       setMessages(prev => prev.filter(m => m.id !== loadingMsgId));
+
+      let errorMessage = 'Error procesando imagen';
+      if (error instanceof Error) {
+        if (error.name === 'AbortError') {
+          errorMessage = 'El OCR tardó demasiado. Asegúrate que la imagen sea clara y bien iluminada.';
+        } else {
+          errorMessage = error.message;
+        }
+      }
+
       setMessages(prev => [...prev, {
         id: Date.now().toString(),
         type: 'bot',
-        content: `❌ Error: ${error instanceof Error ? error.message : 'Error procesando imagen'}`,
+        content: `❌ ${errorMessage}`,
         timestamp: new Date()
       }]);
     } finally {
@@ -596,7 +616,7 @@ export default function ChatInterface() {
   };
 
   return (
-    <div className="flex flex-col w-full bg-[#efeae2] shadow-xl relative overflow-hidden" style={{ height: '100dvh' }}>
+    <div className="flex flex-col w-full bg-[#efeae2] relative overflow-hidden" style={{ height: '100dvh' }}>
       {/* Header */}
       <header className="bg-[#00a884] text-white p-3 flex items-center justify-between z-10 shadow-md">
         <div className="flex items-center gap-3">

@@ -4,7 +4,7 @@ import sharp from 'sharp';
 import { createWorker } from 'tesseract.js';
 
 export const dynamic = 'force-dynamic';
-export const maxDuration = 30;
+export const maxDuration = 60; // Aumentado para OCR más lento en imágenes grandes
 
 // Fallback: Si Paddle no está disponible, usa Tesseract
 const USE_TESSERACT_FALLBACK = true;
