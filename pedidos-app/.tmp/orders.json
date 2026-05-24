@@ -1,0 +1,17 @@
+[
+  {
+    "id": "ORD-3904",
+    "customer": "Cliente Web",
+    "phone": "Por definir",
+    "items": [
+      {
+        "ref": "25872-2",
+        "name": "Producto Desconocido",
+        "quantity": 24
+      }
+    ],
+    "status": "Pendientes",
+    "date": "22/5/2026",
+    "total_items": 24
+  }
+]
