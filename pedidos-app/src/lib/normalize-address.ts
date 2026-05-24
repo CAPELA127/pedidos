@@ -4,14 +4,14 @@
  *
  * Ej: "Cra 45 #95-23, Medellín, Laureles" → "cra45#9523medellinlaureles"
  */
-export function normalizeAddress(address: string): string {
+export function normalizeAddress(address?: string | null): string {
   if (!address) return '';
 
   return address
     .toLowerCase()                    // Minúsculas
     .replace(/[áéíóú]/g, c => ({     // Quitar acentos
       'á': 'a', 'é': 'e', 'í': 'i', 'ó': 'o', 'ú': 'u'
-    }[c]))
+    }[c] || c))
     .replace(/[^a-z0-9]/g, '')       // Remover caracteres especiales y espacios
     .trim();
 }
