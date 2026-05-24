@@ -1,7 +1,8 @@
 "use client";
 
 import React, { useState, useRef, useEffect } from 'react';
-import { Camera, Send, Check, MoreVertical, Phone, ShoppingCart } from 'lucide-react';
+import { Send, Check, MoreVertical, Phone, ShoppingCart } from 'lucide-react';
+import ImageCapture from '../ImageCapture';
 
 interface OrderItem {
   ref: string;
@@ -34,7 +35,7 @@ export default function ChatInterface() {
   const [orderItems, setOrderItems] = useState<OrderItem[]>([]);
   const [conversationState, setConversationState] = useState<ConversationState>('awaiting_name');
   const [customerData, setCustomerData] = useState<CustomerData>({ name: '', email: '' });
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [ocrProcessingTime, setOcrProcessingTime] = useState(0);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -52,12 +53,9 @@ export default function ChatInterface() {
   }, []);
 
   // ── Seleccionar imagen → auto-OCR inmediato ──
-  const handleImageSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    if (fileInputRef.current) fileInputRef.current.value = '';
-
+  const handleImageCapture = async (file: File, source: 'camera' | 'upload') => {
     const url = URL.createObjectURL(file);
+    const ocrStartTime = Date.now();
 
     // Mostrar imagen en el chat de inmediato
     setMessages(prev => [...prev, {
@@ -69,33 +67,44 @@ export default function ChatInterface() {
 
     // Indicador de lectura
     setIsProcessing(true);
+    const loadingMsgId = 'ocr-loading-' + Date.now();
     setMessages(prev => [...prev, {
-      id: 'ocr-loading',
+      id: loadingMsgId,
       type: 'bot',
-      content: '🔍 Leyendo referencia del producto...',
+      content: '🔍 Analizando imagen...',
       timestamp: new Date()
     }]);
 
     try {
-      // Enviar al servidor para OCR (más preciso que en el browser)
+      // Enviar al servidor para OCR
       const formData = new FormData();
       formData.append('image', file);
       const res = await fetch('/api/ocr-paddle', { method: 'POST', body: formData });
       const data = await res.json();
 
+      // Calcular tiempo de procesamiento
+      const processingTime = data.processingTime || (Date.now() - ocrStartTime);
+      setOcrProcessingTime(processingTime);
+
       // Quitar el mensaje de "leyendo..."
-      setMessages(prev => prev.filter(m => m.id !== 'ocr-loading'));
+      setMessages(prev => prev.filter(m => m.id !== loadingMsgId));
 
       if (data.success && data.data?.ref) {
         const { ref, name } = data.data;
         const notInInventory = data.warning;
+        const confidence = data.confidence || 85;
+
+        // Mensaje mejorado con tiempo de procesamiento
+        const timeLabel = processingTime > 1000
+          ? `(${(processingTime / 1000).toFixed(1)}s)`
+          : '✨';
 
         setMessages(prev => [...prev, {
           id: Date.now().toString(),
           type: 'bot',
           content: notInInventory
-            ? `⚠️ Detecté REF: ${ref} — pero no está en el inventario.\n¿Cuántas unidades igual? (o sube otra foto)`
-            : `✅ Detecté:\n📦 ${name}\n🏷️ REF: ${ref}\n\n¿Cuántas unidades?`,
+            ? `⚠️ Detecté REF: ${ref} ${timeLabel}\nno en inventario.\n¿Cuántas unidades? (o intenta otra foto)`
+            : `✅ ${name}\n🏷️ ${ref} ${timeLabel}\n\n¿Cantidad?`,
           metadata: { ref, name, pendingQuantity: true },
           timestamp: new Date()
         }]);
@@ -103,20 +112,22 @@ export default function ChatInterface() {
         setMessages(prev => [...prev, {
           id: Date.now().toString(),
           type: 'bot',
-          content: '❌ No logré leer la referencia. Asegúrate de que el código sea visible y la foto esté nítida. Intenta de nuevo.',
+          content: '❌ Imagen poco clara. Asegúrate de que:\n• El código esté visible\n• Buena iluminación\n• Foto enfocada\n\nIntenta de nuevo.',
           timestamp: new Date()
         }]);
       }
-    } catch {
-      setMessages(prev => prev.filter(m => m.id !== 'ocr-loading'));
+    } catch (error) {
+      setMessages(prev => prev.filter(m => m.id !== loadingMsgId));
       setMessages(prev => [...prev, {
         id: Date.now().toString(),
         type: 'bot',
-        content: 'Error al procesar la imagen. Intenta de nuevo.',
+        content: `❌ Error: ${error instanceof Error ? error.message : 'Error procesando imagen'}`,
         timestamp: new Date()
       }]);
     } finally {
       setIsProcessing(false);
+      // Liberar memoria
+      URL.revokeObjectURL(url);
     }
   };
 
@@ -423,30 +434,20 @@ export default function ChatInterface() {
         </button>
       </div>
 
+      {/* Image Capture (Mobile/Desktop) */}
+      {conversationState === 'ready' && (
+        <div className="bg-[#f0f2f5] px-2 pt-2">
+          <ImageCapture
+            onImageCapture={handleImageCapture}
+            disabled={isProcessing}
+          />
+        </div>
+      )}
+
       {/* Input Area */}
       <div className="bg-[#f0f2f5] px-2 pt-2 flex flex-col gap-2" style={{ paddingBottom: 'max(20px, env(safe-area-inset-bottom, 20px))' }}>
         <div className="flex items-end gap-2">
           <div className="flex-1 bg-white rounded-full px-4 py-2.5 flex items-center gap-2 shadow-sm min-h-[44px]">
-            {/* Input oculto para seleccionar imagen — cámara + galería */}
-            <input
-              type="file"
-              accept="image/*"
-              className="hidden"
-              ref={fileInputRef}
-              onChange={handleImageSelect}
-            />
-            <button
-              onClick={() => fileInputRef.current?.click()}
-              disabled={conversationState !== 'ready' || isProcessing}
-              className={`flex-shrink-0 transition-colors ${
-                conversationState === 'ready' && !isProcessing
-                  ? 'text-[#00a884] hover:text-[#008f6f]'
-                  : 'text-gray-200 cursor-not-allowed'
-              }`}
-              title="Tomar foto o subir imagen"
-            >
-              <Camera size={22} />
-            </button>
             <input
               type="text"
               placeholder={
@@ -454,15 +455,13 @@ export default function ChatInterface() {
                   ? 'Escribe tu nombre...'
                   : conversationState === 'awaiting_email'
                   ? 'Escribe tu email...'
-                  : isProcessing
-                  ? 'Analizando imagen...'
-                  : 'Escribe la cantidad o un mensaje...'
+                  : 'Cantidad, número o mensaje...'
               }
               className="flex-1 bg-transparent outline-none text-sm text-gray-800 placeholder-gray-400"
               value={inputText}
               onChange={e => setInputText(e.target.value)}
               onKeyDown={e => e.key === 'Enter' && handleSend()}
-              disabled={isProcessing}
+              disabled={isProcessing && conversationState !== 'ready'}
             />
           </div>
           <button
