@@ -80,7 +80,7 @@ export default function ChatInterface() {
       // Enviar al servidor para OCR (más preciso que en el browser)
       const formData = new FormData();
       formData.append('image', file);
-      const res = await fetch('/api/ocr', { method: 'POST', body: formData });
+      const res = await fetch('/api/ocr-paddle', { method: 'POST', body: formData });
       const data = await res.json();
 
       // Quitar el mensaje de "leyendo..."
