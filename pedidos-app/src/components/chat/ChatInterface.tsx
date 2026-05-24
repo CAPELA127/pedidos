@@ -596,7 +596,7 @@ export default function ChatInterface() {
   };
 
   return (
-    <div className="flex flex-col max-w-md mx-auto bg-[#efeae2] shadow-xl relative overflow-hidden" style={{ height: '100dvh' }}>
+    <div className="flex flex-col w-full bg-[#efeae2] shadow-xl relative overflow-hidden" style={{ height: '100dvh' }}>
       {/* Header */}
       <header className="bg-[#00a884] text-white p-3 flex items-center justify-between z-10 shadow-md">
         <div className="flex items-center gap-3">
