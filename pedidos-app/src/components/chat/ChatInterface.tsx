@@ -18,7 +18,7 @@ interface Message {
   content?: string;
   imageUrl?: string;
   timestamp: Date;
-  metadata?: { ref?: string; name?: string; price?: number; pendingQuantity?: boolean };
+  metadata?: { ref?: string; name?: string; price?: number; pendingQuantity?: boolean; pendingPriceConfirm?: boolean };
 }
 
 type ConversationState =
@@ -117,15 +117,28 @@ export default function ChatInterface() {
         // Formato de precio
         const priceLabel = price ? `\n💰 COP $${price.toLocaleString('es-CO')}` : '';
 
-        setMessages(prev => [...prev, {
-          id: Date.now().toString(),
-          type: 'bot',
-          content: notInInventory
-            ? `⚠️ REF: ${ref} ${timeLabel}${priceLabel}\n⚠️ No en inventario\n¿Cuántas unidades?`
-            : `✅ ${name}\n🏷️ ${ref}${priceLabel} ${timeLabel}\n\n¿Cantidad?`,
-          metadata: { ref, name, price: price || undefined, pendingQuantity: true },
-          timestamp: new Date()
-        }]);
+        // Si hay precio, pedir confirmación. Si no, saltar a cantidad
+        if (price) {
+          setMessages(prev => [...prev, {
+            id: Date.now().toString(),
+            type: 'bot',
+            content: notInInventory
+              ? `⚠️ REF: ${ref} ${timeLabel}${priceLabel}\n⚠️ No en inventario\n\n¿El precio está bien? Escribe:\n✅ (sí/ok) o\n💰 (nuevo precio)`
+              : `✅ ${name}\n🏷️ ${ref}${priceLabel} ${timeLabel}\n\n¿El precio está bien? Escribe:\n✅ (sí/ok) o\n💰 (nuevo precio)`,
+            metadata: { ref, name, price: price || undefined, pendingPriceConfirm: true },
+            timestamp: new Date()
+          }]);
+        } else {
+          setMessages(prev => [...prev, {
+            id: Date.now().toString(),
+            type: 'bot',
+            content: notInInventory
+              ? `⚠️ REF: ${ref} ${timeLabel}\n⚠️ No en inventario\n¿Cuántas unidades?`
+              : `✅ ${name}\n🏷️ ${ref} ${timeLabel}\n\n¿Cantidad?`,
+            metadata: { ref, name, price: price || undefined, pendingQuantity: true },
+            timestamp: new Date()
+          }]);
+        }
       } else {
         setMessages(prev => [...prev, {
           id: Date.now().toString(),
@@ -406,6 +419,58 @@ export default function ChatInterface() {
       content: currentText,
       timestamp: new Date()
     }]);
+
+    // ── Manejo de confirmación de precio ──
+    const pendingPriceBot = [...messages].reverse().find(
+      m => m.type === 'bot' && m.metadata?.pendingPriceConfirm
+    );
+
+    if (pendingPriceBot?.metadata?.ref) {
+      const isOk = /^(si|sí|ok|okay|s|vale|claro|listo|confirmado?)$/i.test(currentText);
+      const priceMatch = currentText.match(/\d+/);
+      const newPrice = priceMatch ? parseInt(priceMatch[0]) : null;
+
+      if (isOk) {
+        // Usuario confirma el precio, pasar a cantidad
+        const updatedPrice = pendingPriceBot.metadata.price;
+        setMessages(prev =>
+          prev.map(m =>
+            m.id === pendingPriceBot.id
+              ? { ...m, metadata: { ...m.metadata, pendingPriceConfirm: false, pendingQuantity: true } }
+              : m
+          )
+        );
+        setMessages(prev => [...prev, {
+          id: Date.now().toString(),
+          type: 'bot',
+          content: '✅ Perfecto. ¿Cuántas unidades?',
+          timestamp: new Date()
+        }]);
+      } else if (newPrice && newPrice > 0) {
+        // Usuario proporciona nuevo precio
+        setMessages(prev =>
+          prev.map(m =>
+            m.id === pendingPriceBot.id
+              ? { ...m, metadata: { ...m.metadata, price: newPrice, pendingPriceConfirm: false, pendingQuantity: true } }
+              : m
+          )
+        );
+        setMessages(prev => [...prev, {
+          id: Date.now().toString(),
+          type: 'bot',
+          content: `✅ Precio actualizado a COP $${newPrice.toLocaleString('es-CO')}. ¿Cuántas unidades?`,
+          timestamp: new Date()
+        }]);
+      } else {
+        setMessages(prev => [...prev, {
+          id: Date.now().toString(),
+          type: 'bot',
+          content: 'No entendí. Escribe:\n✅ (para confirmar el precio) o\n💰 (un número para cambiar el precio)',
+          timestamp: new Date()
+        }]);
+      }
+      return;
+    }
 
     // ── Solo texto → responder cantidad pendiente ──
     const pendingBot = [...messages].reverse().find(
