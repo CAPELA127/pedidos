@@ -67,10 +67,63 @@ export default function ChatInterface() {
     setConversationState('awaiting_name');
   }, []);
 
+  // Comprimir imagen en navegador para OCR instantáneo
+  const compressImageInBrowser = async (file: File): Promise<File> => {
+    return new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.readAsDataURL(file);
+      reader.onload = (event) => {
+        const img = new Image();
+        img.src = event.target?.result as string;
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          const maxWidth = 1024;
+          const maxHeight = 768;
+          let width = img.width;
+          let height = img.height;
+
+          // Mantener aspect ratio
+          if (width > height) {
+            if (width > maxWidth) {
+              height = Math.round((height * maxWidth) / width);
+              width = maxWidth;
+            }
+          } else {
+            if (height > maxHeight) {
+              width = Math.round((width * maxHeight) / height);
+              height = maxHeight;
+            }
+          }
+
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d');
+          ctx?.drawImage(img, 0, 0, width, height);
+
+          canvas.toBlob(
+            (blob) => {
+              if (blob) {
+                const compressedFile = new File([blob], file.name, { type: 'image/jpeg' });
+                resolve(compressedFile);
+              } else {
+                resolve(file); // Fallback si falla
+              }
+            },
+            'image/jpeg',
+            0.75 // 75% calidad
+          );
+        };
+      };
+    });
+  };
+
   // ── Seleccionar imagen → auto-OCR inmediato ──
   const handleImageCapture = async (file: File, source: 'camera' | 'upload') => {
-    const url = URL.createObjectURL(file);
     const ocrStartTime = Date.now();
+
+    // Comprimir en el navegador (3-12MB → 150-200KB)
+    const compressedFile = await compressImageInBrowser(file);
+    const url = URL.createObjectURL(compressedFile);
 
     // Mostrar imagen en el chat de inmediato
     setMessages(prev => [...prev, {
@@ -91,12 +144,12 @@ export default function ChatInterface() {
     }]);
 
     try {
-      // Enviar al servidor para OCR (con timeout de 90 segundos)
+      // Enviar al servidor para OCR (con timeout de 45 segundos - rápido con imagen comprimida)
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 90000);
+      const timeoutId = setTimeout(() => controller.abort(), 45000);
 
       const formData = new FormData();
-      formData.append('image', file);
+      formData.append('image', compressedFile);
 
       const res = await fetch('/api/ocr-paddle', {
         method: 'POST',
