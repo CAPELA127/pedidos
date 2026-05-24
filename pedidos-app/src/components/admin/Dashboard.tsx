@@ -15,7 +15,11 @@ interface Order {
   customer: string;
   email?: string;
   customer_id?: string;
-  phone: string;
+  phone?: string;
+  local_name?: string;
+  city?: string;
+  neighborhood?: string;
+  address?: string;
   items: OrderItem[];
   status: string;
   date: string;
@@ -50,15 +54,49 @@ export default function Dashboard() {
     fetchOrders();
   }, [fetchOrders]);
 
-  // Actualiza estado y persiste en BD
+  // Actualiza estado y persiste en BD + envía email si es "Empacado"
   const updateStatus = async (orderId: string, newStatus: string) => {
     try {
+      const order = orders.find(o => o.id === orderId);
+      if (!order) throw new Error('Pedido no encontrado');
+
       const res = await fetch(`/api/orders/${orderId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: newStatus })
       });
       if (!res.ok) throw new Error('Error al actualizar estado');
+
+      // Enviar email si cambia a "Empacado"
+      if (newStatus === 'Empacado' && order.email) {
+        const emailPayload = {
+          orderId: order.id,
+          customerEmail: order.email,
+          customerName: order.customer,
+          localName: order.local_name || 'Bodega',
+          items: order.items.map(item => ({
+            product_name: item.name,
+            quantity: item.quantity,
+            price_at_time: item.price
+          })),
+          totalPrice: order.total,
+          status: 'Empacado'
+        };
+
+        try {
+          const emailRes = await fetch('/api/email/send-order-confirmation', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(emailPayload)
+          });
+          if (!emailRes.ok) {
+            console.warn('Email no se envió, pero el pedido fue actualizado');
+          }
+        } catch (emailError) {
+          console.warn('Error enviando email:', emailError);
+        }
+      }
+
       setOrders(prev =>
         prev.map(o => o.id === orderId ? { ...o, status: newStatus } : o)
       );
@@ -304,16 +342,52 @@ export default function Dashboard() {
         <div className="fixed inset-0 bg-black/50 flex items-end sm:items-center justify-center z-50 p-0 sm:p-4">
           <div className="bg-white rounded-t-2xl sm:rounded-2xl shadow-xl w-full sm:max-w-2xl max-h-[92vh] overflow-auto">
             {/* Header */}
-            <div className="sticky top-0 bg-white border-b p-4 sm:p-6 flex justify-between items-center z-10">
-              <div>
-                <h2 className="text-lg sm:text-2xl font-bold text-gray-800">{selectedOrder.id}</h2>
-                <p className="text-sm text-gray-500 mt-0.5">
-                  {selectedOrder.customer} • {selectedOrder.email}
-                </p>
+            <div className="sticky top-0 bg-white border-b p-4 sm:p-6 z-10">
+              <div className="flex justify-between items-start mb-4">
+                <div>
+                  <h2 className="text-lg sm:text-2xl font-bold text-gray-800">{selectedOrder.id}</h2>
+                  <p className="text-sm text-gray-500 mt-0.5">
+                    {selectedOrder.customer} • {selectedOrder.email}
+                  </p>
+                </div>
+                <button onClick={closeModal} className="text-gray-400 hover:text-gray-600 p-2">
+                  <X size={22} />
+                </button>
               </div>
-              <button onClick={closeModal} className="text-gray-400 hover:text-gray-600 p-2">
-                <X size={22} />
-              </button>
+
+              {/* Customer Details */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 bg-gray-50 p-3 rounded-lg">
+                {selectedOrder.phone && (
+                  <div className="text-sm">
+                    <span className="text-gray-600">Teléfono:</span>
+                    <p className="font-medium text-gray-800">{selectedOrder.phone}</p>
+                  </div>
+                )}
+                {selectedOrder.local_name && (
+                  <div className="text-sm">
+                    <span className="text-gray-600">Local/Negocio:</span>
+                    <p className="font-medium text-gray-800">{selectedOrder.local_name}</p>
+                  </div>
+                )}
+                {selectedOrder.city && (
+                  <div className="text-sm">
+                    <span className="text-gray-600">Ciudad:</span>
+                    <p className="font-medium text-gray-800">{selectedOrder.city}</p>
+                  </div>
+                )}
+                {selectedOrder.neighborhood && (
+                  <div className="text-sm">
+                    <span className="text-gray-600">Barrio:</span>
+                    <p className="font-medium text-gray-800">{selectedOrder.neighborhood}</p>
+                  </div>
+                )}
+                {selectedOrder.address && (
+                  <div className="text-sm sm:col-span-2">
+                    <span className="text-gray-600">Dirección:</span>
+                    <p className="font-medium text-gray-800">{selectedOrder.address}</p>
+                  </div>
+                )}
+              </div>
             </div>
 
             {/* Items */}
@@ -400,34 +474,65 @@ export default function Dashboard() {
             )}
 
             {/* Acciones */}
-            <div className="border-t bg-white p-4 sm:p-6 flex gap-2 justify-end sticky bottom-0">
-              <button onClick={closeModal} className="px-4 py-2 border rounded-lg text-gray-700 text-sm font-medium hover:bg-gray-50">
-                Cancelar
-              </button>
-              {!isEditing ? (
-                <button
-                  onClick={() => setIsEditing(true)}
-                  className="px-4 py-2 bg-purple-600 text-white rounded-lg text-sm font-medium hover:bg-purple-700 flex items-center gap-1.5"
-                >
-                  <Edit2 size={14} /> Editar
-                </button>
-              ) : (
-                <>
-                  <button
-                    onClick={() => { setIsEditing(false); setEditingItems([...selectedOrder!.items]); }}
-                    className="px-4 py-2 border rounded-lg text-gray-700 text-sm font-medium hover:bg-gray-50"
+            <div className="border-t bg-white p-4 sm:p-6 space-y-3 sticky bottom-0">
+              {/* Estado dropdown */}
+              {selectedOrder.status === 'Pendiente' && (
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-gray-600">Estado:</span>
+                  <select
+                    value={selectedOrder.status}
+                    onChange={e => updateStatus(selectedOrder.id, e.target.value)}
+                    className="px-3 py-2 border rounded-lg text-sm font-medium text-gray-800 focus:outline-none focus:border-[#00a884] bg-white"
                   >
-                    Descartar
-                  </button>
-                  <button
-                    onClick={saveItemChanges}
-                    disabled={isProcessing}
-                    className={`px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-1.5 ${isProcessing ? 'bg-gray-400 text-white cursor-not-allowed' : 'bg-green-600 text-white hover:bg-green-700'}`}
-                  >
-                    {isProcessing ? 'Guardando...' : <><Save size={14} /> Guardar</>}
-                  </button>
-                </>
+                    <option value="Pendiente">Pendiente</option>
+                    <option value="Empacado">Empacar</option>
+                  </select>
+                </div>
               )}
+              {selectedOrder.status === 'Empacado' && (
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-gray-600">Estado:</span>
+                  <select
+                    value={selectedOrder.status}
+                    onChange={e => updateStatus(selectedOrder.id, e.target.value)}
+                    className="px-3 py-2 border rounded-lg text-sm font-medium text-gray-800 focus:outline-none focus:border-[#00a884] bg-white"
+                  >
+                    <option value="Empacado">Empacado</option>
+                    <option value="Enviado">Enviar</option>
+                  </select>
+                </div>
+              )}
+
+              {/* Botones edición */}
+              <div className="flex gap-2 justify-end">
+                <button onClick={closeModal} className="px-4 py-2 border rounded-lg text-gray-700 text-sm font-medium hover:bg-gray-50">
+                  Cerrar
+                </button>
+                {!isEditing ? (
+                  <button
+                    onClick={() => setIsEditing(true)}
+                    className="px-4 py-2 bg-purple-600 text-white rounded-lg text-sm font-medium hover:bg-purple-700 flex items-center gap-1.5"
+                  >
+                    <Edit2 size={14} /> Editar productos
+                  </button>
+                ) : (
+                  <>
+                    <button
+                      onClick={() => { setIsEditing(false); setEditingItems([...selectedOrder!.items]); }}
+                      className="px-4 py-2 border rounded-lg text-gray-700 text-sm font-medium hover:bg-gray-50"
+                    >
+                      Descartar
+                    </button>
+                    <button
+                      onClick={saveItemChanges}
+                      disabled={isProcessing}
+                      className={`px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-1.5 ${isProcessing ? 'bg-gray-400 text-white cursor-not-allowed' : 'bg-green-600 text-white hover:bg-green-700'}`}
+                    >
+                      {isProcessing ? 'Guardando...' : <><Save size={14} /> Guardar</>}
+                    </button>
+                  </>
+                )}
+              </div>
             </div>
           </div>
         </div>
