@@ -30,7 +30,7 @@ export async function GET() {
         status,
         total,
         created_at,
-        customers (id, name, email),
+        customers (id, name, email, phone, local_name, city, neighborhood, address),
         order_items (
           id,
           product_ref,
@@ -47,6 +47,11 @@ export async function GET() {
       id: o.id,
       customer: o.customers?.name || 'Sin nombre',
       email: o.customers?.email || '',
+      phone: o.customers?.phone || '',
+      local_name: o.customers?.local_name || '',
+      city: o.customers?.city || '',
+      neighborhood: o.customers?.neighborhood || '',
+      address: o.customers?.address || '',
       customer_id: o.customer_id,
       items: (o.order_items || []).map((oi: any) => ({
         ref: oi.product_ref,

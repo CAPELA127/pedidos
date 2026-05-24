@@ -3,6 +3,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Send, Check, MoreVertical, Phone, ShoppingCart } from 'lucide-react';
 import ImageCapture from '../ImageCapture';
+import { normalizeAddress, validatePhoneNumber } from '@/lib/normalize-address';
 
 interface OrderItem {
   ref: string;
@@ -20,11 +21,24 @@ interface Message {
   metadata?: { ref?: string; name?: string; price?: number; pendingQuantity?: boolean };
 }
 
-type ConversationState = 'awaiting_name' | 'awaiting_email' | 'ready';
+type ConversationState =
+  | 'awaiting_name'
+  | 'awaiting_email'
+  | 'awaiting_phone'
+  | 'awaiting_local'
+  | 'awaiting_city'
+  | 'awaiting_neighborhood'
+  | 'awaiting_address'
+  | 'ready';
 
 interface CustomerData {
   name: string;
   email: string;
+  phone?: string;
+  localName?: string;
+  city?: string;
+  neighborhood?: string;
+  address?: string;
   id?: string;
 }
 
@@ -135,7 +149,6 @@ export default function ChatInterface() {
     }
   };
 
-  // ── Pegar imagen con Ctrl+V ──
   // ── Enviar mensaje ──
   const handleSend = async () => {
     if (!inputText.trim()) return;
@@ -180,7 +193,6 @@ export default function ChatInterface() {
         return;
       }
 
-      setIsProcessing(true);
       setMessages(prev => [...prev, {
         id: Date.now().toString(),
         type: 'user',
@@ -188,11 +200,163 @@ export default function ChatInterface() {
         timestamp: new Date()
       }]);
 
+      setCustomerData(prev => ({ ...prev, email }));
+
+      setMessages(prev => [...prev, {
+        id: (Date.now() + 1).toString(),
+        type: 'bot',
+        content: '¿Cuál es tu teléfono? (ej: 3115555555)',
+        timestamp: new Date()
+      }]);
+
+      setConversationState('awaiting_phone');
+      setInputText('');
+      return;
+    }
+
+    // ─── CAPTURA Y VALIDACIÓN DE TELÉFONO ───
+    if (conversationState === 'awaiting_phone') {
+      const phone = inputText.trim();
+
+      if (!validatePhoneNumber(phone)) {
+        setMessages(prev => [...prev, {
+          id: Date.now().toString(),
+          type: 'bot',
+          content: '❌ Teléfono inválido. Debe tener 10-15 dígitos (ej: 3115555555 o +573115555555)',
+          timestamp: new Date()
+        }]);
+        setInputText('');
+        return;
+      }
+
+      setMessages(prev => [...prev, {
+        id: Date.now().toString(),
+        type: 'user',
+        content: phone,
+        timestamp: new Date()
+      }]);
+
+      setCustomerData(prev => ({ ...prev, phone }));
+
+      setMessages(prev => [...prev, {
+        id: (Date.now() + 1).toString(),
+        type: 'bot',
+        content: '¿Cuál es el nombre de tu local/negocio?',
+        timestamp: new Date()
+      }]);
+
+      setConversationState('awaiting_local');
+      setInputText('');
+      return;
+    }
+
+    // ─── CAPTURA DE NOMBRE DEL LOCAL ───
+    if (conversationState === 'awaiting_local') {
+      const localName = inputText.trim();
+
+      setMessages(prev => [...prev, {
+        id: Date.now().toString(),
+        type: 'user',
+        content: localName,
+        timestamp: new Date()
+      }]);
+
+      setCustomerData(prev => ({ ...prev, localName }));
+
+      setMessages(prev => [...prev, {
+        id: (Date.now() + 1).toString(),
+        type: 'bot',
+        content: '¿En qué ciudad estás? (ej: Medellín)',
+        timestamp: new Date()
+      }]);
+
+      setConversationState('awaiting_city');
+      setInputText('');
+      return;
+    }
+
+    // ─── CAPTURA DE CIUDAD ───
+    if (conversationState === 'awaiting_city') {
+      const city = inputText.trim();
+
+      setMessages(prev => [...prev, {
+        id: Date.now().toString(),
+        type: 'user',
+        content: city,
+        timestamp: new Date()
+      }]);
+
+      setCustomerData(prev => ({ ...prev, city }));
+
+      setMessages(prev => [...prev, {
+        id: (Date.now() + 1).toString(),
+        type: 'bot',
+        content: '¿En qué barrio? (ej: Laureles)',
+        timestamp: new Date()
+      }]);
+
+      setConversationState('awaiting_neighborhood');
+      setInputText('');
+      return;
+    }
+
+    // ─── CAPTURA DE BARRIO ───
+    if (conversationState === 'awaiting_neighborhood') {
+      const neighborhood = inputText.trim();
+
+      setMessages(prev => [...prev, {
+        id: Date.now().toString(),
+        type: 'user',
+        content: neighborhood,
+        timestamp: new Date()
+      }]);
+
+      setCustomerData(prev => ({ ...prev, neighborhood }));
+
+      setMessages(prev => [...prev, {
+        id: (Date.now() + 1).toString(),
+        type: 'bot',
+        content: '¿Cuál es la dirección completa? (ej: Cra 45 #95-23)',
+        timestamp: new Date()
+      }]);
+
+      setConversationState('awaiting_address');
+      setInputText('');
+      return;
+    }
+
+    // ─── CAPTURA Y GUARDADO DE DIRECCIÓN ───
+    if (conversationState === 'awaiting_address') {
+      const address = inputText.trim();
+
+      setMessages(prev => [...prev, {
+        id: Date.now().toString(),
+        type: 'user',
+        content: address,
+        timestamp: new Date()
+      }]);
+
+      setCustomerData(prev => ({ ...prev, address }));
+
+      setIsProcessing(true);
+
       try {
+        const addressNormalized = normalizeAddress(address);
+        const payload = {
+          name: customerData.name,
+          email: customerData.email,
+          phone: customerData.phone,
+          local_name: customerData.localName,
+          city: customerData.city,
+          neighborhood: customerData.neighborhood,
+          address: address,
+          address_normalized: addressNormalized
+        };
+
         const response = await fetch('/api/customers', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: customerData.name, email })
+          body: JSON.stringify(payload)
         });
 
         const data = await response.json();
@@ -201,7 +365,6 @@ export default function ChatInterface() {
 
         setCustomerData(prev => ({
           ...prev,
-          email,
           id: data.customer.id
         }));
 
@@ -314,8 +477,12 @@ export default function ChatInterface() {
         id: orderId,
         customer: customerData.name,
         email: customerData.email,
+        phone: customerData.phone,
+        local_name: customerData.localName,
+        city: customerData.city,
+        neighborhood: customerData.neighborhood,
+        address: customerData.address,
         customer_id: customerData.id,
-        phone: 'Por definir',
         items: orderItems,
         status: 'Pendiente',
         date: new Date().toLocaleDateString('es-ES'),
@@ -466,13 +633,23 @@ export default function ChatInterface() {
                   ? 'Escribe tu nombre...'
                   : conversationState === 'awaiting_email'
                   ? 'Escribe tu email...'
+                  : conversationState === 'awaiting_phone'
+                  ? 'Escribe tu teléfono...'
+                  : conversationState === 'awaiting_local'
+                  ? 'Nombre del local...'
+                  : conversationState === 'awaiting_city'
+                  ? 'Ciudad...'
+                  : conversationState === 'awaiting_neighborhood'
+                  ? 'Barrio...'
+                  : conversationState === 'awaiting_address'
+                  ? 'Dirección completa...'
                   : 'Cantidad, número o mensaje...'
               }
               className="flex-1 bg-transparent outline-none text-sm text-gray-800 placeholder-gray-400"
               value={inputText}
               onChange={e => setInputText(e.target.value)}
               onKeyDown={e => e.key === 'Enter' && handleSend()}
-              disabled={isProcessing && conversationState !== 'ready'}
+              disabled={isProcessing}
             />
           </div>
           <button

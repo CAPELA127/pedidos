@@ -1,13 +1,24 @@
 -- Supabase Schema para la App de Pedidos
 
--- 1. Tabla Customers
+-- 1. Tabla Customers (actualizada con datos de local y dirección)
 CREATE TABLE Customers (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name TEXT NOT NULL,
-    phone TEXT NOT NULL UNIQUE,
-    email TEXT,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
+    email TEXT NOT NULL,
+    phone TEXT,
+    local_name TEXT,              -- Nombre del local/negocio
+    city TEXT,                    -- Ciudad (ej: Medellín)
+    neighborhood TEXT,            -- Barrio (ej: Laureles)
+    address TEXT,                 -- Dirección completa
+    address_normalized TEXT,      -- Dirección normalizada para UNIQUE (minúsculas, sin espacios)
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
 );
+
+-- Crear índice único: mismo local + dirección = cliente único (permite múltiples emails)
+CREATE UNIQUE INDEX IF NOT EXISTS idx_customers_local_address
+ON Customers(local_name, address_normalized)
+WHERE local_name IS NOT NULL AND address_normalized IS NOT NULL;
 
 -- 2. Tabla Products (Catálogo Maestro)
 CREATE TABLE Products (
@@ -18,13 +29,14 @@ CREATE TABLE Products (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
 );
 
--- 3. Tabla Orders
+-- 3. Tabla Orders (con tracking de estado)
 CREATE TABLE Orders (
     id TEXT PRIMARY KEY, -- Generaremos IDs legibles como ORD-1002
-    customer_id UUID REFERENCES Customers(id),
-    status TEXT NOT NULL DEFAULT 'Pendiente', -- Pendiente, Empacado, Enviado
+    customer_id UUID REFERENCES Customers(id) ON DELETE CASCADE,
+    status TEXT NOT NULL DEFAULT 'Pendiente' CHECK (status IN ('Pendiente', 'Empacado', 'Enviado')),
     total NUMERIC NOT NULL DEFAULT 0,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
 );
 
 -- 4. Tabla OrderItems

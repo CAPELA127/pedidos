@@ -41,7 +41,16 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   try {
-    const { name, email } = await request.json();
+    const {
+      name,
+      email,
+      phone,
+      local_name,
+      city,
+      neighborhood,
+      address,
+      address_normalized
+    } = await request.json();
 
     if (!name || !email) {
       return NextResponse.json(
@@ -50,36 +59,49 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Buscar cliente existente por email
-    const { data: existing } = await getSupabase()
-      .from(TABLE)
-      .select('id, name, email')
-      .eq('email', email)
-      .single();
+    // Buscar cliente existente por local_name + address_normalized (si están disponibles)
+    if (local_name && address_normalized) {
+      const { data: existing } = await getSupabase()
+        .from(TABLE)
+        .select('id, name, email, phone, local_name, city, neighborhood, address')
+        .eq('local_name', local_name)
+        .eq('address_normalized', address_normalized)
+        .single();
 
-    if (existing) {
-      return NextResponse.json({
-        success: true,
-        customer: { id: existing.id, name: existing.name, email: existing.email, isNew: false }
-      });
+      if (existing) {
+        return NextResponse.json({
+          success: true,
+          customer: { ...existing, isNew: false }
+        });
+      }
     }
 
-    // Crear nuevo cliente — solo name y email, phone es opcional
+    // Crear nuevo cliente con todos los datos
+    const newCustomerData = {
+      name,
+      email,
+      phone: phone || null,
+      local_name: local_name || null,
+      city: city || null,
+      neighborhood: neighborhood || null,
+      address: address || null,
+      address_normalized: address_normalized || null
+    };
+
     const { data: newCustomer, error } = await getSupabase()
       .from(TABLE)
-      .insert([{ name, email }])
-      .select('id, name, email')
+      .insert([newCustomerData])
+      .select('id, name, email, phone, local_name, city, neighborhood, address')
       .single();
 
     if (error) {
-      // Log completo para depuración
       console.error('Supabase insert error:', JSON.stringify(error));
       throw new Error(error.message || 'No se pudo crear el cliente en Supabase');
     }
 
     return NextResponse.json({
       success: true,
-      customer: { id: newCustomer.id, name: newCustomer.name, email: newCustomer.email, isNew: true }
+      customer: { ...newCustomer, isNew: true }
     });
   } catch (error) {
     console.error('POST /api/customers error:', error);
