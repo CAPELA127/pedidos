@@ -25,13 +25,17 @@ interface Message {
 type ConversationState =
   | 'awaiting_search'
   | 'confirming_customer'
+  | 'awaiting_tipo_id'
   | 'awaiting_cc_nit'
-  | 'awaiting_name'
-  | 'awaiting_email'
+  | 'awaiting_primer_nombre'
+  | 'awaiting_segundo_nombre'
+  | 'awaiting_primer_apellido'
+  | 'awaiting_segundo_apellido'
   | 'awaiting_phone'
-  | 'awaiting_local'
+  | 'awaiting_telefono_2'
+  | 'awaiting_email'
   | 'awaiting_city'
-  | 'awaiting_neighborhood'
+  | 'awaiting_departamento'
   | 'awaiting_address'
   | 'ready';
 
@@ -39,9 +43,18 @@ interface CustomerData {
   name: string;
   email: string;
   ccNit?: string;
+  tipoIdentificacion?: string;
+  primerNombre?: string;
+  segundoNombre?: string;
+  primerApellido?: string;
+  segundoApellido?: string;
+  alias?: string;
   phone?: string;
+  telefono2?: string;
   localName?: string;
   city?: string;
+  departamento?: string;
+  pais?: string;
   neighborhood?: string;
   address?: string;
   id?: string;
@@ -50,11 +63,20 @@ interface CustomerData {
 interface CustomerSearchResult {
   id: string;
   name: string;
-  email: string;
+  email?: string;
   cc_nit?: string;
+  tipo_identificacion?: string;
+  primer_nombre?: string;
+  segundo_nombre?: string;
+  primer_apellido?: string;
+  segundo_apellido?: string;
+  alias?: string;
   phone?: string;
+  telefono_2?: string;
   local_name?: string;
   city?: string;
+  departamento?: string;
+  pais?: string;
   neighborhood?: string;
   address?: string;
 }
@@ -85,12 +107,11 @@ export default function ChatInterface() {
     setMessages([{
       id: '1',
       type: 'bot',
-      content: '¡Hola! 👋 Busca tu perfil por CC/NIT o nombre en la barra de arriba, o regístrate como nuevo cliente.',
+      content: '¡Hola! 👋 Busca tu perfil por NIT/CC o nombre en la barra de arriba, o regístrate como nuevo cliente.',
       timestamp: new Date()
     }]);
   }, []);
 
-  // Cerrar dropdown al click fuera
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
       if (searchRef.current && !searchRef.current.contains(e.target as Node)) {
@@ -136,24 +157,34 @@ export default function ChatInterface() {
     setCustomerData({
       id: customer.id,
       name: customer.name,
-      email: customer.email,
+      email: customer.email || '',
       ccNit: customer.cc_nit,
+      tipoIdentificacion: customer.tipo_identificacion,
+      primerNombre: customer.primer_nombre,
+      segundoNombre: customer.segundo_nombre,
+      primerApellido: customer.primer_apellido,
+      segundoApellido: customer.segundo_apellido,
+      alias: customer.alias,
       phone: customer.phone,
+      telefono2: customer.telefono_2,
       localName: customer.local_name,
       city: customer.city,
+      departamento: customer.departamento,
+      pais: customer.pais,
       neighborhood: customer.neighborhood,
       address: customer.address,
     });
 
+    const tipoLabel = customer.tipo_identificacion || 'CC/NIT';
     const lines = [
-      `✅ Perfil encontrado:`,
-      `👤 ${customer.name}`,
-      customer.cc_nit ? `🆔 CC/NIT: ${customer.cc_nit}` : null,
-      customer.phone ? `📱 ${customer.phone}` : null,
-      customer.local_name ? `🏪 ${customer.local_name}` : null,
-      (customer.city || customer.neighborhood)
-        ? `📍 ${[customer.city, customer.neighborhood].filter(Boolean).join(', ')}`
+      `✅ Cliente encontrado:`,
+      `👤 ${customer.name}${customer.alias ? ` (${customer.alias})` : ''}`,
+      customer.cc_nit ? `🆔 ${tipoLabel}: ${customer.cc_nit}` : null,
+      customer.phone ? `📱 ${customer.phone}${customer.telefono_2 ? ` / ${customer.telefono_2}` : ''}` : null,
+      (customer.city || customer.departamento)
+        ? `📍 ${[customer.city, customer.departamento].filter(Boolean).join(', ')}`
         : null,
+      customer.address ? `🏠 ${customer.address}` : null,
       ``,
       `¿Confirmas que este es tu perfil? (sí / no)`,
     ].filter(l => l !== null).join('\n');
@@ -174,10 +205,10 @@ export default function ChatInterface() {
     setMessages(prev => [...prev, {
       id: Date.now().toString(),
       type: 'bot',
-      content: '¿Cuál es tu CC o NIT?',
+      content: '¿Tipo de identificación? (CC, NIT, CE, Pasaporte)',
       timestamp: new Date()
     }]);
-    setConversationState('awaiting_cc_nit');
+    setConversationState('awaiting_tipo_id');
   };
 
   const compressImageInBrowser = async (file: File): Promise<File> => {
@@ -266,7 +297,6 @@ export default function ChatInterface() {
           timestamp: new Date()
         }]);
 
-        // Mostrar card interactivo en lugar de flujo de chat
         setActiveProduct({ imageUrl: url, ref, name, price });
       } else {
         setMessages(prev => [...prev, {
@@ -323,45 +353,75 @@ export default function ChatInterface() {
       return;
     }
 
+    // ── TIPO IDENTIFICACIÓN ──
+    if (conversationState === 'awaiting_tipo_id') {
+      const tipoIdentificacion = inputText.trim().toUpperCase();
+      setMessages(prev => [...prev, { id: Date.now().toString(), type: 'user', content: tipoIdentificacion, timestamp: new Date() }]);
+      setCustomerData(prev => ({ ...prev, tipoIdentificacion }));
+      setMessages(prev => [...prev, { id: (Date.now() + 1).toString(), type: 'bot', content: '¿Cuál es tu número de identificación?', timestamp: new Date() }]);
+      setConversationState('awaiting_cc_nit');
+      setInputText('');
+      return;
+    }
+
     // ── CC/NIT ──
     if (conversationState === 'awaiting_cc_nit') {
       const ccNit = inputText.trim();
       setMessages(prev => [...prev, { id: Date.now().toString(), type: 'user', content: ccNit, timestamp: new Date() }]);
       setCustomerData(prev => ({ ...prev, ccNit }));
-      setMessages(prev => [...prev, { id: (Date.now() + 1).toString(), type: 'bot', content: '¿Cuál es tu nombre?', timestamp: new Date() }]);
-      setConversationState('awaiting_name');
+      setMessages(prev => [...prev, { id: (Date.now() + 1).toString(), type: 'bot', content: '¿Cuál es tu primer nombre?', timestamp: new Date() }]);
+      setConversationState('awaiting_primer_nombre');
       setInputText('');
       return;
     }
 
-    // ── NOMBRE ──
-    if (conversationState === 'awaiting_name') {
-      const name = inputText.trim();
-      setMessages(prev => [...prev, { id: Date.now().toString(), type: 'user', content: name, timestamp: new Date() }]);
-      setCustomerData(prev => ({ ...prev, name }));
-      setMessages(prev => [...prev, { id: (Date.now() + 1).toString(), type: 'bot', content: `Perfecto, ${name}. ¿Cuál es tu email?`, timestamp: new Date() }]);
-      setConversationState('awaiting_email');
+    // ── PRIMER NOMBRE ──
+    if (conversationState === 'awaiting_primer_nombre') {
+      const primerNombre = inputText.trim();
+      setMessages(prev => [...prev, { id: Date.now().toString(), type: 'user', content: primerNombre, timestamp: new Date() }]);
+      setCustomerData(prev => ({ ...prev, primerNombre }));
+      setMessages(prev => [...prev, { id: (Date.now() + 1).toString(), type: 'bot', content: '¿Segundo nombre? (escribe "no" si no tienes)', timestamp: new Date() }]);
+      setConversationState('awaiting_segundo_nombre');
       setInputText('');
       return;
     }
 
-    // ── EMAIL ──
-    if (conversationState === 'awaiting_email') {
-      const email = inputText.trim();
-      if (!email.includes('@') || !email.includes('.')) {
-        setMessages(prev => [...prev, { id: Date.now().toString(), type: 'bot', content: '❌ Email inválido. Usa formato: usuario@ejemplo.com', timestamp: new Date() }]);
-        setInputText('');
-        return;
-      }
-      setMessages(prev => [...prev, { id: Date.now().toString(), type: 'user', content: email, timestamp: new Date() }]);
-      setCustomerData(prev => ({ ...prev, email }));
-      setMessages(prev => [...prev, { id: (Date.now() + 1).toString(), type: 'bot', content: '¿Cuál es tu teléfono? (ej: 3115555555)', timestamp: new Date() }]);
+    // ── SEGUNDO NOMBRE (opcional) ──
+    if (conversationState === 'awaiting_segundo_nombre') {
+      const input = inputText.trim();
+      const segundoNombre = /^(no|ninguno|n\/a|-)$/i.test(input) ? undefined : input;
+      setMessages(prev => [...prev, { id: Date.now().toString(), type: 'user', content: input, timestamp: new Date() }]);
+      setCustomerData(prev => ({ ...prev, segundoNombre }));
+      setMessages(prev => [...prev, { id: (Date.now() + 1).toString(), type: 'bot', content: '¿Primer apellido?', timestamp: new Date() }]);
+      setConversationState('awaiting_primer_apellido');
+      setInputText('');
+      return;
+    }
+
+    // ── PRIMER APELLIDO ──
+    if (conversationState === 'awaiting_primer_apellido') {
+      const primerApellido = inputText.trim();
+      setMessages(prev => [...prev, { id: Date.now().toString(), type: 'user', content: primerApellido, timestamp: new Date() }]);
+      setCustomerData(prev => ({ ...prev, primerApellido }));
+      setMessages(prev => [...prev, { id: (Date.now() + 1).toString(), type: 'bot', content: '¿Segundo apellido? (escribe "no" si no tienes)', timestamp: new Date() }]);
+      setConversationState('awaiting_segundo_apellido');
+      setInputText('');
+      return;
+    }
+
+    // ── SEGUNDO APELLIDO (opcional) ──
+    if (conversationState === 'awaiting_segundo_apellido') {
+      const input = inputText.trim();
+      const segundoApellido = /^(no|ninguno|n\/a|-)$/i.test(input) ? undefined : input;
+      setMessages(prev => [...prev, { id: Date.now().toString(), type: 'user', content: input, timestamp: new Date() }]);
+      setCustomerData(prev => ({ ...prev, segundoApellido }));
+      setMessages(prev => [...prev, { id: (Date.now() + 1).toString(), type: 'bot', content: '¿Teléfono principal? (ej: 3115555555)', timestamp: new Date() }]);
       setConversationState('awaiting_phone');
       setInputText('');
       return;
     }
 
-    // ── TELÉFONO ──
+    // ── TELÉFONO 1 ──
     if (conversationState === 'awaiting_phone') {
       const phone = inputText.trim();
       if (!validatePhoneNumber(phone)) {
@@ -371,18 +431,36 @@ export default function ChatInterface() {
       }
       setMessages(prev => [...prev, { id: Date.now().toString(), type: 'user', content: phone, timestamp: new Date() }]);
       setCustomerData(prev => ({ ...prev, phone }));
-      setMessages(prev => [...prev, { id: (Date.now() + 1).toString(), type: 'bot', content: '¿Cuál es el nombre de tu local/negocio?', timestamp: new Date() }]);
-      setConversationState('awaiting_local');
+      setMessages(prev => [...prev, { id: (Date.now() + 1).toString(), type: 'bot', content: '¿Teléfono secundario? (escribe "no" si no tienes)', timestamp: new Date() }]);
+      setConversationState('awaiting_telefono_2');
       setInputText('');
       return;
     }
 
-    // ── LOCAL ──
-    if (conversationState === 'awaiting_local') {
-      const localName = inputText.trim();
-      setMessages(prev => [...prev, { id: Date.now().toString(), type: 'user', content: localName, timestamp: new Date() }]);
-      setCustomerData(prev => ({ ...prev, localName }));
-      setMessages(prev => [...prev, { id: (Date.now() + 1).toString(), type: 'bot', content: '¿En qué ciudad estás? (ej: Medellín)', timestamp: new Date() }]);
+    // ── TELÉFONO 2 (opcional) ──
+    if (conversationState === 'awaiting_telefono_2') {
+      const input = inputText.trim();
+      const telefono2 = /^(no|ninguno|n\/a|-)$/i.test(input) ? undefined : input;
+      setMessages(prev => [...prev, { id: Date.now().toString(), type: 'user', content: input, timestamp: new Date() }]);
+      setCustomerData(prev => ({ ...prev, telefono2 }));
+      setMessages(prev => [...prev, { id: (Date.now() + 1).toString(), type: 'bot', content: '¿Cuál es tu email? (escribe "no" si no tienes)', timestamp: new Date() }]);
+      setConversationState('awaiting_email');
+      setInputText('');
+      return;
+    }
+
+    // ── EMAIL (opcional) ──
+    if (conversationState === 'awaiting_email') {
+      const input = inputText.trim();
+      if (!/^(no|ninguno|n\/a|-)$/i.test(input) && (!input.includes('@') || !input.includes('.'))) {
+        setMessages(prev => [...prev, { id: Date.now().toString(), type: 'bot', content: '❌ Email inválido. Usa formato usuario@ejemplo.com o escribe "no"', timestamp: new Date() }]);
+        setInputText('');
+        return;
+      }
+      const email = /^(no|ninguno|n\/a|-)$/i.test(input) ? '' : input;
+      setMessages(prev => [...prev, { id: Date.now().toString(), type: 'user', content: input, timestamp: new Date() }]);
+      setCustomerData(prev => ({ ...prev, email }));
+      setMessages(prev => [...prev, { id: (Date.now() + 1).toString(), type: 'bot', content: '¿En qué ciudad estás?', timestamp: new Date() }]);
       setConversationState('awaiting_city');
       setInputText('');
       return;
@@ -393,18 +471,18 @@ export default function ChatInterface() {
       const city = inputText.trim();
       setMessages(prev => [...prev, { id: Date.now().toString(), type: 'user', content: city, timestamp: new Date() }]);
       setCustomerData(prev => ({ ...prev, city }));
-      setMessages(prev => [...prev, { id: (Date.now() + 1).toString(), type: 'bot', content: '¿En qué barrio? (ej: Laureles)', timestamp: new Date() }]);
-      setConversationState('awaiting_neighborhood');
+      setMessages(prev => [...prev, { id: (Date.now() + 1).toString(), type: 'bot', content: '¿En qué departamento?', timestamp: new Date() }]);
+      setConversationState('awaiting_departamento');
       setInputText('');
       return;
     }
 
-    // ── BARRIO ──
-    if (conversationState === 'awaiting_neighborhood') {
-      const neighborhood = inputText.trim();
-      setMessages(prev => [...prev, { id: Date.now().toString(), type: 'user', content: neighborhood, timestamp: new Date() }]);
-      setCustomerData(prev => ({ ...prev, neighborhood }));
-      setMessages(prev => [...prev, { id: (Date.now() + 1).toString(), type: 'bot', content: '¿Cuál es la dirección completa? (ej: Cra 45 #95-23)', timestamp: new Date() }]);
+    // ── DEPARTAMENTO ──
+    if (conversationState === 'awaiting_departamento') {
+      const departamento = inputText.trim();
+      setMessages(prev => [...prev, { id: Date.now().toString(), type: 'user', content: departamento, timestamp: new Date() }]);
+      setCustomerData(prev => ({ ...prev, departamento }));
+      setMessages(prev => [...prev, { id: (Date.now() + 1).toString(), type: 'bot', content: '¿Dirección completa? (ej: Cra 45 #95-23)', timestamp: new Date() }]);
       setConversationState('awaiting_address');
       setInputText('');
       return;
@@ -417,14 +495,27 @@ export default function ChatInterface() {
       setIsProcessing(true);
 
       try {
+        const fullName = [
+          customerData.primerNombre,
+          customerData.segundoNombre,
+          customerData.primerApellido,
+          customerData.segundoApellido,
+        ].filter(Boolean).join(' ') || customerData.name;
+
         const payload = {
-          name: customerData.name,
-          email: customerData.email,
+          name: fullName,
+          email: customerData.email || null,
           cc_nit: customerData.ccNit,
+          tipo_identificacion: customerData.tipoIdentificacion,
+          primer_nombre: customerData.primerNombre,
+          segundo_nombre: customerData.segundoNombre,
+          primer_apellido: customerData.primerApellido,
+          segundo_apellido: customerData.segundoApellido,
           phone: customerData.phone,
-          local_name: customerData.localName,
+          telefono_2: customerData.telefono2,
           city: customerData.city,
-          neighborhood: customerData.neighborhood,
+          departamento: customerData.departamento,
+          pais: 'Colombia',
           address,
           address_normalized: normalizeAddress(address),
         };
@@ -438,12 +529,12 @@ export default function ChatInterface() {
         const data = await response.json();
         if (!response.ok) throw new Error(data.message);
 
-        setCustomerData(prev => ({ ...prev, address, id: data.customer.id }));
+        setCustomerData(prev => ({ ...prev, address, name: fullName, id: data.customer.id }));
 
         setMessages(prev => [...prev, {
           id: (Date.now() + 1).toString(),
           type: 'bot',
-          content: `${data.customer.isNew ? `¡Bienvenido, ${customerData.name}! 🎉` : `¡Hola de nuevo, ${customerData.name}! 👋`} Sube las fotos de los productos y escribe la cantidad. 📦`,
+          content: `${data.customer.isNew ? `¡Bienvenido, ${fullName}! 🎉` : `¡Hola de nuevo, ${fullName}! 👋`} Sube las fotos de los productos y escribe la cantidad. 📦`,
           timestamp: new Date()
         }]);
         setConversationState('ready');
@@ -583,13 +674,17 @@ export default function ChatInterface() {
 
   const inputPlaceholder =
     conversationState === 'confirming_customer' ? 'sí / no...' :
-    conversationState === 'awaiting_cc_nit' ? 'CC o NIT...' :
-    conversationState === 'awaiting_name' ? 'Tu nombre...' :
-    conversationState === 'awaiting_email' ? 'Tu email...' :
-    conversationState === 'awaiting_phone' ? 'Teléfono...' :
-    conversationState === 'awaiting_local' ? 'Nombre del local...' :
+    conversationState === 'awaiting_tipo_id' ? 'CC, NIT, CE, Pasaporte...' :
+    conversationState === 'awaiting_cc_nit' ? 'Número de identificación...' :
+    conversationState === 'awaiting_primer_nombre' ? 'Primer nombre...' :
+    conversationState === 'awaiting_segundo_nombre' ? 'Segundo nombre (o "no")...' :
+    conversationState === 'awaiting_primer_apellido' ? 'Primer apellido...' :
+    conversationState === 'awaiting_segundo_apellido' ? 'Segundo apellido (o "no")...' :
+    conversationState === 'awaiting_phone' ? 'Teléfono 1...' :
+    conversationState === 'awaiting_telefono_2' ? 'Teléfono 2 (o "no")...' :
+    conversationState === 'awaiting_email' ? 'Email (o "no")...' :
     conversationState === 'awaiting_city' ? 'Ciudad...' :
-    conversationState === 'awaiting_neighborhood' ? 'Barrio...' :
+    conversationState === 'awaiting_departamento' ? 'Departamento...' :
     conversationState === 'awaiting_address' ? 'Dirección completa...' :
     'Cantidad, número o mensaje...';
 
@@ -621,7 +716,7 @@ export default function ChatInterface() {
               <Search size={15} className="text-gray-400 flex-shrink-0" />
               <input
                 type="text"
-                placeholder="Buscar por CC/NIT o nombre del cliente..."
+                placeholder="Buscar por NIT, CC o nombre del cliente..."
                 value={searchQuery}
                 onChange={handleSearchInput}
                 onFocus={() => searchResults.length > 0 && setShowDropdown(true)}
@@ -652,12 +747,12 @@ export default function ChatInterface() {
                           <div className="min-w-0">
                             <p className="text-sm font-semibold text-gray-800 truncate">{customer.name}</p>
                             <p className="text-xs text-gray-500 truncate">
-                              {[customer.local_name, customer.city].filter(Boolean).join(' · ')}
+                              {[customer.city, customer.departamento].filter(Boolean).join(', ')}
                             </p>
                           </div>
                           {customer.cc_nit && (
                             <span className="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full whitespace-nowrap flex-shrink-0">
-                              {customer.cc_nit}
+                              {customer.tipo_identificacion ? `${customer.tipo_identificacion} ` : ''}{customer.cc_nit}
                             </span>
                           )}
                         </div>
