@@ -106,9 +106,10 @@ export default function ImageCapture({ onImageCapture, disabled = false }: Image
 
   return (
     <div className="flex flex-col gap-2">
-      {/* Input file oculto */}
+      {/* Input file oculto — id obligatorio para que el label lo active en iOS */}
       <input
         ref={fileInputRef}
+        id="image-file-input"
         type="file"
         accept="image/*"
         className="hidden"
@@ -155,26 +156,25 @@ export default function ImageCapture({ onImageCapture, disabled = false }: Image
       {/* Modo file picker / drag & drop */}
       {!isCameraActive && (
         <div className="flex flex-col gap-2">
-          {/* Drag & drop zone */}
-          <div
+          {/* Drag & drop zone — label activa el input en iOS sin .click() */}
+          <label
+            htmlFor={disabled ? undefined : 'image-file-input'}
             onDragEnter={handleDrag}
             onDragLeave={handleDrag}
             onDragOver={handleDrag}
             onDrop={handleDrop}
-            className={`border-2 border-dashed rounded-lg p-4 text-center transition-colors cursor-pointer ${
+            className={`border-2 border-dashed rounded-lg p-4 text-center transition-colors ${
               dragActive
                 ? 'border-blue-500 bg-blue-50'
                 : 'border-gray-300 bg-gray-50 hover:border-blue-400'
-            } ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
-            onClick={() => !disabled && fileInputRef.current?.click()}
-            title="Arrastra imagen aquí o haz clic"
+            } ${disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
           >
             <Upload size={24} className="mx-auto mb-2 text-gray-600" />
             <p className="text-sm font-medium text-gray-700">
               {dragActive ? 'Suelta la imagen' : 'Arrastra imagen o haz clic'}
             </p>
             <p className="text-xs text-gray-500">JPG, PNG o WebP • Máx 5MB</p>
-          </div>
+          </label>
 
           {/* Botones de acción */}
           <div className="flex gap-2">
@@ -188,27 +188,24 @@ export default function ImageCapture({ onImageCapture, disabled = false }: Image
                     ? 'bg-gray-200 text-gray-400 cursor-not-allowed'
                     : 'bg-green-500 text-white hover:bg-green-600 active:scale-95'
                 }`}
-                title="Abre la cámara"
               >
                 <Camera size={18} />
                 <span className="text-sm">Cámara</span>
               </button>
             )}
 
-            {/* Botón cargar archivo */}
-            <button
-              onClick={() => !disabled && fileInputRef.current?.click()}
-              disabled={disabled}
+            {/* Botón archivo — label nativo, funciona en iOS Safari */}
+            <label
+              htmlFor={disabled ? undefined : 'image-file-input'}
               className={`flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg font-medium transition-colors ${
                 disabled
                   ? 'bg-gray-200 text-gray-400 cursor-not-allowed'
-                  : 'bg-blue-500 text-white hover:bg-blue-600 active:scale-95'
+                  : 'bg-blue-500 text-white hover:bg-blue-600 active:scale-95 cursor-pointer'
               }`}
-              title="Elige archivo de galería"
             >
               <Upload size={18} />
               <span className="text-sm">Archivo</span>
-            </button>
+            </label>
           </div>
         </div>
       )}
