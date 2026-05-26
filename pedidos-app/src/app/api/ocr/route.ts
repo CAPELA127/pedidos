@@ -1,39 +1,14 @@
 import { NextResponse } from 'next/server';
-import { createWorker } from 'tesseract.js';
+import Anthropic from '@anthropic-ai/sdk';
 import { getSupabase } from '@/lib/supabase-server';
 
 export const dynamic = 'force-dynamic';
 
-// Extrae posibles referencias de un texto OCR
-function extractRefs(text: string): string[] {
-  const candidates: string[] = [];
-
-  // 1. Patrón explícito: REF: 25872-2 o REF 25872-2
-  const explicitRef = text.match(/REF[:\s.#]*([A-Za-z0-9][A-Za-z0-9\-]{2,15})/gi);
-  if (explicitRef) {
-    explicitRef.forEach(m => {
-      const val = m.replace(/^REF[:\s.#]*/i, '').trim();
-      if (val) candidates.push(val);
-    });
-  }
-
-  // 2. Código numérico con guión: 25872-2, 1234-56, etc.
-  const numericRef = text.match(/\b\d{3,7}-\d{1,4}\b/g);
-  if (numericRef) candidates.push(...numericRef);
-
-  // 3. Alfanumérico con guión tipo PC-35, AB-1234
-  const alphaRef = text.match(/\b[A-Z]{1,4}-\d{2,6}\b/g);
-  if (alphaRef) candidates.push(...alphaRef);
-
-  // 4. Solo números largos de 5-8 dígitos (fallback)
-  const numOnly = text.match(/\b\d{5,8}\b/g);
-  if (numOnly) candidates.push(...numOnly);
-
-  // Deduplicar y limpiar
-  return [...new Set(candidates.map(c => c.trim().toUpperCase()))];
-}
+const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
 export async function POST(req: Request) {
+  const startTime = Date.now();
+
   try {
     const formData = await req.formData();
     const image = formData.get('image') as File;
@@ -43,71 +18,90 @@ export async function POST(req: Request) {
     }
 
     const arrayBuffer = await image.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
+    const base64 = Buffer.from(arrayBuffer).toString('base64');
+    const mediaType = (image.type || 'image/jpeg') as 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif';
 
-    // Tesseract con español + inglés para mejor lectura alfanumérica
-    const worker = await createWorker(['spa', 'eng']);
-    await worker.setParameters({
-      tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-:. ',
+    // Claude Vision extrae la referencia del producto
+    const response = await anthropic.messages.create({
+      model: 'claude-haiku-4-5',
+      max_tokens: 100,
+      messages: [{
+        role: 'user',
+        content: [
+          {
+            type: 'image',
+            source: { type: 'base64', media_type: mediaType, data: base64 }
+          },
+          {
+            type: 'text',
+            text: `Extrae SOLO el código o referencia del producto en esta imagen.
+El formato suele ser: números con guión (ej: 4162-9, 25872-2) o letras+números (ej: PC-35).
+Responde ÚNICAMENTE con el código, sin texto adicional.
+Si hay varios, el más prominente o el que parece ser la referencia principal.
+Si no encuentras ningún código, responde: NINGUNO`
+          }
+        ]
+      }]
     });
-    const { data: { text } } = await worker.recognize(buffer);
-    await worker.terminate();
 
-    console.log('OCR raw text:', text);
+    const rawRef = (response.content[0] as { type: string; text: string }).text.trim().toUpperCase();
+    const processingTime = Date.now() - startTime;
 
-    const candidates = extractRefs(text);
-    console.log('Ref candidates:', candidates);
+    console.log('Claude OCR resultado:', rawRef, `(${processingTime}ms)`);
 
-    if (candidates.length === 0) {
+    if (!rawRef || rawRef === 'NINGUNO') {
       return NextResponse.json({
         success: false,
-        error: 'No se detectó ninguna referencia',
-        rawText: text
+        error: 'No se detectó ninguna referencia en la imagen',
+        processingTime
       });
     }
 
     const supabase = getSupabase();
 
-    // Buscar cada candidato en INVENTARIO EL PUNTAZO
-    for (const ref of candidates) {
-      // Búsqueda exacta primero
-      const { data: exact } = await supabase
-        .from('INVENTARIO EL PUNTAZO')
-        .select('Referencia, Producto')
-        .eq('Referencia', ref)
-        .limit(1);
+    // Búsqueda exacta
+    const { data: exact } = await supabase
+      .from('INVENTARIO EL PUNTAZO')
+      .select('Referencia, Producto, Precio')
+      .eq('Referencia', rawRef)
+      .limit(1);
 
-      if (exact && exact.length > 0) {
-        return NextResponse.json({
-          success: true,
-          data: { ref: exact[0].Referencia, name: exact[0].Producto, rawText: text }
-        });
-      }
-
-      // Búsqueda flexible (ilike)
-      const { data: fuzzy } = await supabase
-        .from('INVENTARIO EL PUNTAZO')
-        .select('Referencia, Producto')
-        .ilike('Referencia', `%${ref}%`)
-        .limit(1);
-
-      if (fuzzy && fuzzy.length > 0) {
-        return NextResponse.json({
-          success: true,
-          data: { ref: fuzzy[0].Referencia, name: fuzzy[0].Producto, rawText: text }
-        });
-      }
+    if (exact && exact.length > 0) {
+      return NextResponse.json({
+        success: true,
+        data: { ref: exact[0].Referencia, name: exact[0].Producto, price: exact[0].Precio },
+        processingTime
+      });
     }
 
-    // No se encontró en inventario — devolver el primer candidato de todas formas
+    // Búsqueda flexible
+    const { data: fuzzy } = await supabase
+      .from('INVENTARIO EL PUNTAZO')
+      .select('Referencia, Producto, Precio')
+      .ilike('Referencia', `%${rawRef}%`)
+      .limit(1);
+
+    if (fuzzy && fuzzy.length > 0) {
+      return NextResponse.json({
+        success: true,
+        data: { ref: fuzzy[0].Referencia, name: fuzzy[0].Producto, price: fuzzy[0].Precio },
+        processingTime
+      });
+    }
+
+    // No está en inventario pero se detectó la referencia
     return NextResponse.json({
       success: true,
-      data: { ref: candidates[0], name: 'Producto Desconocido', rawText: text },
-      warning: 'Referencia no encontrada en inventario'
+      data: { ref: rawRef, name: 'Producto Desconocido' },
+      warning: 'Referencia no encontrada en inventario',
+      processingTime
     });
 
   } catch (error) {
     console.error('OCR API Error:', error);
-    return NextResponse.json({ success: false, error: 'Error procesando imagen' }, { status: 500 });
+    return NextResponse.json(
+      { success: false, error: 'Error procesando imagen' },
+      { status: 500 }
+    );
   }
 }
