@@ -1,8 +1,9 @@
 "use client";
 
 import React, { useState, useRef, useEffect } from 'react';
-import { Send, Check, MoreVertical, Phone, ShoppingCart } from 'lucide-react';
+import { Send, Check, MoreVertical, Phone, ShoppingCart, Search, UserPlus, X } from 'lucide-react';
 import ImageCapture from '../ImageCapture';
+import ProductCard from '../ProductCard';
 import { normalizeAddress, validatePhoneNumber } from '@/lib/normalize-address';
 
 interface OrderItem {
@@ -22,6 +23,9 @@ interface Message {
 }
 
 type ConversationState =
+  | 'awaiting_search'
+  | 'confirming_customer'
+  | 'awaiting_cc_nit'
   | 'awaiting_name'
   | 'awaiting_email'
   | 'awaiting_phone'
@@ -34,6 +38,7 @@ type ConversationState =
 interface CustomerData {
   name: string;
   email: string;
+  ccNit?: string;
   phone?: string;
   localName?: string;
   city?: string;
@@ -42,17 +47,35 @@ interface CustomerData {
   id?: string;
 }
 
+interface CustomerSearchResult {
+  id: string;
+  name: string;
+  email: string;
+  cc_nit?: string;
+  phone?: string;
+  local_name?: string;
+  city?: string;
+  neighborhood?: string;
+  address?: string;
+}
+
 export default function ChatInterface() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputText, setInputText] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
   const [isSending, setIsSending] = useState(false);
   const [orderItems, setOrderItems] = useState<OrderItem[]>([]);
-  const [conversationState, setConversationState] = useState<ConversationState>('awaiting_name');
+  const [conversationState, setConversationState] = useState<ConversationState>('awaiting_search');
   const [customerData, setCustomerData] = useState<CustomerData>({ name: '', email: '' });
-  const [ocrProcessingTime, setOcrProcessingTime] = useState(0);
-  const [selectedImage, setSelectedImage] = useState<{ url: string; file?: File } | null>(null);
+  const [selectedImage, setSelectedImage] = useState<{ url: string } | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<CustomerSearchResult[]>([]);
+  const [showDropdown, setShowDropdown] = useState(false);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [activeProduct, setActiveProduct] = useState<{ imageUrl: string; ref: string; name: string; price?: number } | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const searchRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -62,13 +85,101 @@ export default function ChatInterface() {
     setMessages([{
       id: '1',
       type: 'bot',
-      content: '¡Hola! 👋 ¿Cuál es tu nombre?',
+      content: '¡Hola! 👋 Busca tu perfil por CC/NIT o nombre en la barra de arriba, o regístrate como nuevo cliente.',
       timestamp: new Date()
     }]);
-    setConversationState('awaiting_name');
   }, []);
 
-  // Comprimir imagen en navegador para OCR instantáneo
+  // Cerrar dropdown al click fuera
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (searchRef.current && !searchRef.current.contains(e.target as Node)) {
+        setShowDropdown(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  const handleSearchInput = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = e.target.value;
+    setSearchQuery(value);
+
+    if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
+
+    if (value.length < 2) {
+      setSearchResults([]);
+      setShowDropdown(false);
+      return;
+    }
+
+    setSearchLoading(true);
+    setShowDropdown(true);
+
+    searchTimeoutRef.current = setTimeout(async () => {
+      try {
+        const res = await fetch(`/api/customers?q=${encodeURIComponent(value)}`);
+        const data = await res.json();
+        setSearchResults(data.customers || []);
+      } catch {
+        setSearchResults([]);
+      } finally {
+        setSearchLoading(false);
+      }
+    }, 400);
+  };
+
+  const handleSelectCustomer = (customer: CustomerSearchResult) => {
+    setShowDropdown(false);
+    setSearchQuery('');
+
+    setCustomerData({
+      id: customer.id,
+      name: customer.name,
+      email: customer.email,
+      ccNit: customer.cc_nit,
+      phone: customer.phone,
+      localName: customer.local_name,
+      city: customer.city,
+      neighborhood: customer.neighborhood,
+      address: customer.address,
+    });
+
+    const lines = [
+      `✅ Perfil encontrado:`,
+      `👤 ${customer.name}`,
+      customer.cc_nit ? `🆔 CC/NIT: ${customer.cc_nit}` : null,
+      customer.phone ? `📱 ${customer.phone}` : null,
+      customer.local_name ? `🏪 ${customer.local_name}` : null,
+      (customer.city || customer.neighborhood)
+        ? `📍 ${[customer.city, customer.neighborhood].filter(Boolean).join(', ')}`
+        : null,
+      ``,
+      `¿Confirmas que este es tu perfil? (sí / no)`,
+    ].filter(l => l !== null).join('\n');
+
+    setMessages(prev => [...prev, {
+      id: Date.now().toString(),
+      type: 'bot',
+      content: lines,
+      timestamp: new Date()
+    }]);
+
+    setConversationState('confirming_customer');
+  };
+
+  const handleNewCustomer = () => {
+    setShowDropdown(false);
+    setSearchQuery('');
+    setMessages(prev => [...prev, {
+      id: Date.now().toString(),
+      type: 'bot',
+      content: '¿Cuál es tu CC o NIT?',
+      timestamp: new Date()
+    }]);
+    setConversationState('awaiting_cc_nit');
+  };
+
   const compressImageInBrowser = async (file: File): Promise<File> => {
     return new Promise((resolve) => {
       const reader = new FileReader();
@@ -83,50 +194,31 @@ export default function ChatInterface() {
           let width = img.width;
           let height = img.height;
 
-          // Mantener aspect ratio
           if (width > height) {
-            if (width > maxWidth) {
-              height = Math.round((height * maxWidth) / width);
-              width = maxWidth;
-            }
+            if (width > maxWidth) { height = Math.round((height * maxWidth) / width); width = maxWidth; }
           } else {
-            if (height > maxHeight) {
-              width = Math.round((width * maxHeight) / height);
-              height = maxHeight;
-            }
+            if (height > maxHeight) { width = Math.round((width * maxHeight) / height); height = maxHeight; }
           }
 
           canvas.width = width;
           canvas.height = height;
-          const ctx = canvas.getContext('2d');
-          ctx?.drawImage(img, 0, 0, width, height);
+          canvas.getContext('2d')?.drawImage(img, 0, 0, width, height);
 
           canvas.toBlob(
-            (blob) => {
-              if (blob) {
-                const compressedFile = new File([blob], file.name, { type: 'image/jpeg' });
-                resolve(compressedFile);
-              } else {
-                resolve(file); // Fallback si falla
-              }
-            },
+            (blob) => resolve(blob ? new File([blob], file.name, { type: 'image/jpeg' }) : file),
             'image/jpeg',
-            0.75 // 75% calidad
+            0.75
           );
         };
       };
     });
   };
 
-  // ── Seleccionar imagen → auto-OCR inmediato ──
-  const handleImageCapture = async (file: File, source: 'camera' | 'upload') => {
+  const handleImageCapture = async (file: File) => {
     const ocrStartTime = Date.now();
-
-    // Comprimir en el navegador (3-12MB → 150-200KB)
     const compressedFile = await compressImageInBrowser(file);
     const url = URL.createObjectURL(compressedFile);
 
-    // Mostrar imagen en el chat de inmediato
     setMessages(prev => [...prev, {
       id: Date.now().toString(),
       type: 'user',
@@ -134,7 +226,6 @@ export default function ChatInterface() {
       timestamp: new Date()
     }]);
 
-    // Indicador de lectura
     setIsProcessing(true);
     const loadingMsgId = 'ocr-loading-' + Date.now();
     setMessages(prev => [...prev, {
@@ -145,14 +236,13 @@ export default function ChatInterface() {
     }]);
 
     try {
-      // Enviar al servidor para OCR (con timeout de 45 segundos - rápido con imagen comprimida)
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 45000);
 
       const formData = new FormData();
       formData.append('image', compressedFile);
 
-      const res = await fetch('/api/ocr-paddle', {
+      const res = await fetch('/api/ocr', {
         method: 'POST',
         body: formData,
         signal: controller.signal
@@ -160,51 +250,24 @@ export default function ChatInterface() {
       clearTimeout(timeoutId);
 
       const data = await res.json();
-
-      // Calcular tiempo de procesamiento
       const processingTime = data.processingTime || (Date.now() - ocrStartTime);
-      setOcrProcessingTime(processingTime);
 
-      // Quitar el mensaje de "leyendo..."
       setMessages(prev => prev.filter(m => m.id !== loadingMsgId));
 
       if (data.success && data.data?.ref) {
         const { ref, name, price } = data.data;
         const notInInventory = data.warning;
-        const confidence = data.confidence || 85;
+        const timeLabel = processingTime > 1000 ? `(${(processingTime / 1000).toFixed(1)}s)` : '✨';
 
-        console.log('OCR Success:', { ref, name, price, confidence, notInInventory });
+        setMessages(prev => [...prev, {
+          id: Date.now().toString(),
+          type: 'bot',
+          content: notInInventory ? `✨ Producto detectado (${ref}) ${timeLabel}\n⚠️ No en inventario - puedes agregarlo igualmente` : `✨ ${name} (${ref}) ${timeLabel}`,
+          timestamp: new Date()
+        }]);
 
-        // Mensaje mejorado con tiempo de procesamiento
-        const timeLabel = processingTime > 1000
-          ? `(${(processingTime / 1000).toFixed(1)}s)`
-          : '✨';
-
-        // Formato de precio
-        const priceLabel = price ? `\n💰 COP $${price.toLocaleString('es-CO')}` : '';
-
-        // Si hay precio, pedir confirmación. Si no, saltar a cantidad
-        if (price) {
-          setMessages(prev => [...prev, {
-            id: Date.now().toString(),
-            type: 'bot',
-            content: notInInventory
-              ? `⚠️ REF: ${ref} ${timeLabel}${priceLabel}\n⚠️ No en inventario\n\n¿El precio está bien? Escribe:\n✅ (sí/ok) o\n💰 (nuevo precio)`
-              : `✅ ${name}\n🏷️ ${ref}${priceLabel} ${timeLabel}\n\n¿El precio está bien? Escribe:\n✅ (sí/ok) o\n💰 (nuevo precio)`,
-            metadata: { ref, name, price: price || undefined, pendingPriceConfirm: true },
-            timestamp: new Date()
-          }]);
-        } else {
-          setMessages(prev => [...prev, {
-            id: Date.now().toString(),
-            type: 'bot',
-            content: notInInventory
-              ? `⚠️ REF: ${ref} ${timeLabel}\n⚠️ No en inventario\n¿Cuántas unidades?`
-              : `✅ ${name}\n🏷️ ${ref} ${timeLabel}\n\n¿Cantidad?`,
-            metadata: { ref, name, price: price || undefined, pendingQuantity: true },
-            timestamp: new Date()
-          }]);
-        }
+        // Mostrar card interactivo en lugar de flujo de chat
+        setActiveProduct({ imageUrl: url, ref, name, price });
       } else {
         setMessages(prev => [...prev, {
           id: Date.now().toString(),
@@ -215,16 +278,9 @@ export default function ChatInterface() {
       }
     } catch (error) {
       setMessages(prev => prev.filter(m => m.id !== loadingMsgId));
-
-      let errorMessage = 'Error procesando imagen';
-      if (error instanceof Error) {
-        if (error.name === 'AbortError') {
-          errorMessage = 'El OCR tardó demasiado. Asegúrate que la imagen sea clara y bien iluminada.';
-        } else {
-          errorMessage = error.message;
-        }
-      }
-
+      const errorMessage = error instanceof Error
+        ? (error.name === 'AbortError' ? 'El OCR tardó demasiado. Asegúrate que la imagen sea clara.' : error.message)
+        : 'Error procesando imagen';
       setMessages(prev => [...prev, {
         id: Date.now().toString(),
         type: 'bot',
@@ -233,213 +289,144 @@ export default function ChatInterface() {
       }]);
     } finally {
       setIsProcessing(false);
-      // Liberar memoria
       URL.revokeObjectURL(url);
     }
   };
 
-  // ── Enviar mensaje ──
   const handleSend = async () => {
     if (!inputText.trim()) return;
 
-    // ─── CAPTURA DE NOMBRE ───
+    // ── CONFIRMAR CLIENTE EXISTENTE ──
+    if (conversationState === 'confirming_customer') {
+      const resp = inputText.trim();
+      setMessages(prev => [...prev, { id: Date.now().toString(), type: 'user', content: resp, timestamp: new Date() }]);
+      setInputText('');
+
+      if (/^(si|sí|s|ok|yes|y|claro|listo|dale|confirmo|correcto)$/i.test(resp)) {
+        setMessages(prev => [...prev, {
+          id: Date.now().toString(),
+          type: 'bot',
+          content: `¡Hola de nuevo, ${customerData.name}! 👋 Sube las fotos de los productos y escribe la cantidad. 📦`,
+          timestamp: new Date()
+        }]);
+        setConversationState('ready');
+      } else {
+        setMessages(prev => [...prev, {
+          id: Date.now().toString(),
+          type: 'bot',
+          content: 'Busca otro perfil arriba o regístrate como nuevo cliente.',
+          timestamp: new Date()
+        }]);
+        setCustomerData({ name: '', email: '' });
+        setConversationState('awaiting_search');
+      }
+      return;
+    }
+
+    // ── CC/NIT ──
+    if (conversationState === 'awaiting_cc_nit') {
+      const ccNit = inputText.trim();
+      setMessages(prev => [...prev, { id: Date.now().toString(), type: 'user', content: ccNit, timestamp: new Date() }]);
+      setCustomerData(prev => ({ ...prev, ccNit }));
+      setMessages(prev => [...prev, { id: (Date.now() + 1).toString(), type: 'bot', content: '¿Cuál es tu nombre?', timestamp: new Date() }]);
+      setConversationState('awaiting_name');
+      setInputText('');
+      return;
+    }
+
+    // ── NOMBRE ──
     if (conversationState === 'awaiting_name') {
       const name = inputText.trim();
-
-      setMessages(prev => [...prev, {
-        id: Date.now().toString(),
-        type: 'user',
-        content: name,
-        timestamp: new Date()
-      }]);
-
+      setMessages(prev => [...prev, { id: Date.now().toString(), type: 'user', content: name, timestamp: new Date() }]);
       setCustomerData(prev => ({ ...prev, name }));
-
-      setMessages(prev => [...prev, {
-        id: (Date.now() + 1).toString(),
-        type: 'bot',
-        content: `Perfecto, ${name}. ¿Cuál es tu email?`,
-        timestamp: new Date()
-      }]);
-
+      setMessages(prev => [...prev, { id: (Date.now() + 1).toString(), type: 'bot', content: `Perfecto, ${name}. ¿Cuál es tu email?`, timestamp: new Date() }]);
       setConversationState('awaiting_email');
       setInputText('');
       return;
     }
 
-    // ─── CAPTURA Y VALIDACIÓN DE EMAIL ───
+    // ── EMAIL ──
     if (conversationState === 'awaiting_email') {
       const email = inputText.trim();
-
       if (!email.includes('@') || !email.includes('.')) {
-        setMessages(prev => [...prev, {
-          id: Date.now().toString(),
-          type: 'bot',
-          content: '❌ Email inválido. Por favor, usa un formato como: usuario@ejemplo.com',
-          timestamp: new Date()
-        }]);
+        setMessages(prev => [...prev, { id: Date.now().toString(), type: 'bot', content: '❌ Email inválido. Usa formato: usuario@ejemplo.com', timestamp: new Date() }]);
         setInputText('');
         return;
       }
-
-      setMessages(prev => [...prev, {
-        id: Date.now().toString(),
-        type: 'user',
-        content: email,
-        timestamp: new Date()
-      }]);
-
+      setMessages(prev => [...prev, { id: Date.now().toString(), type: 'user', content: email, timestamp: new Date() }]);
       setCustomerData(prev => ({ ...prev, email }));
-
-      setMessages(prev => [...prev, {
-        id: (Date.now() + 1).toString(),
-        type: 'bot',
-        content: '¿Cuál es tu teléfono? (ej: 3115555555)',
-        timestamp: new Date()
-      }]);
-
+      setMessages(prev => [...prev, { id: (Date.now() + 1).toString(), type: 'bot', content: '¿Cuál es tu teléfono? (ej: 3115555555)', timestamp: new Date() }]);
       setConversationState('awaiting_phone');
       setInputText('');
       return;
     }
 
-    // ─── CAPTURA Y VALIDACIÓN DE TELÉFONO ───
+    // ── TELÉFONO ──
     if (conversationState === 'awaiting_phone') {
       const phone = inputText.trim();
-
       if (!validatePhoneNumber(phone)) {
-        setMessages(prev => [...prev, {
-          id: Date.now().toString(),
-          type: 'bot',
-          content: '❌ Teléfono inválido. Debe tener 10-15 dígitos (ej: 3115555555 o +573115555555)',
-          timestamp: new Date()
-        }]);
+        setMessages(prev => [...prev, { id: Date.now().toString(), type: 'bot', content: '❌ Teléfono inválido. Debe tener 10-15 dígitos.', timestamp: new Date() }]);
         setInputText('');
         return;
       }
-
-      setMessages(prev => [...prev, {
-        id: Date.now().toString(),
-        type: 'user',
-        content: phone,
-        timestamp: new Date()
-      }]);
-
+      setMessages(prev => [...prev, { id: Date.now().toString(), type: 'user', content: phone, timestamp: new Date() }]);
       setCustomerData(prev => ({ ...prev, phone }));
-
-      setMessages(prev => [...prev, {
-        id: (Date.now() + 1).toString(),
-        type: 'bot',
-        content: '¿Cuál es el nombre de tu local/negocio?',
-        timestamp: new Date()
-      }]);
-
+      setMessages(prev => [...prev, { id: (Date.now() + 1).toString(), type: 'bot', content: '¿Cuál es el nombre de tu local/negocio?', timestamp: new Date() }]);
       setConversationState('awaiting_local');
       setInputText('');
       return;
     }
 
-    // ─── CAPTURA DE NOMBRE DEL LOCAL ───
+    // ── LOCAL ──
     if (conversationState === 'awaiting_local') {
       const localName = inputText.trim();
-
-      setMessages(prev => [...prev, {
-        id: Date.now().toString(),
-        type: 'user',
-        content: localName,
-        timestamp: new Date()
-      }]);
-
+      setMessages(prev => [...prev, { id: Date.now().toString(), type: 'user', content: localName, timestamp: new Date() }]);
       setCustomerData(prev => ({ ...prev, localName }));
-
-      setMessages(prev => [...prev, {
-        id: (Date.now() + 1).toString(),
-        type: 'bot',
-        content: '¿En qué ciudad estás? (ej: Medellín)',
-        timestamp: new Date()
-      }]);
-
+      setMessages(prev => [...prev, { id: (Date.now() + 1).toString(), type: 'bot', content: '¿En qué ciudad estás? (ej: Medellín)', timestamp: new Date() }]);
       setConversationState('awaiting_city');
       setInputText('');
       return;
     }
 
-    // ─── CAPTURA DE CIUDAD ───
+    // ── CIUDAD ──
     if (conversationState === 'awaiting_city') {
       const city = inputText.trim();
-
-      setMessages(prev => [...prev, {
-        id: Date.now().toString(),
-        type: 'user',
-        content: city,
-        timestamp: new Date()
-      }]);
-
+      setMessages(prev => [...prev, { id: Date.now().toString(), type: 'user', content: city, timestamp: new Date() }]);
       setCustomerData(prev => ({ ...prev, city }));
-
-      setMessages(prev => [...prev, {
-        id: (Date.now() + 1).toString(),
-        type: 'bot',
-        content: '¿En qué barrio? (ej: Laureles)',
-        timestamp: new Date()
-      }]);
-
+      setMessages(prev => [...prev, { id: (Date.now() + 1).toString(), type: 'bot', content: '¿En qué barrio? (ej: Laureles)', timestamp: new Date() }]);
       setConversationState('awaiting_neighborhood');
       setInputText('');
       return;
     }
 
-    // ─── CAPTURA DE BARRIO ───
+    // ── BARRIO ──
     if (conversationState === 'awaiting_neighborhood') {
       const neighborhood = inputText.trim();
-
-      setMessages(prev => [...prev, {
-        id: Date.now().toString(),
-        type: 'user',
-        content: neighborhood,
-        timestamp: new Date()
-      }]);
-
+      setMessages(prev => [...prev, { id: Date.now().toString(), type: 'user', content: neighborhood, timestamp: new Date() }]);
       setCustomerData(prev => ({ ...prev, neighborhood }));
-
-      setMessages(prev => [...prev, {
-        id: (Date.now() + 1).toString(),
-        type: 'bot',
-        content: '¿Cuál es la dirección completa? (ej: Cra 45 #95-23)',
-        timestamp: new Date()
-      }]);
-
+      setMessages(prev => [...prev, { id: (Date.now() + 1).toString(), type: 'bot', content: '¿Cuál es la dirección completa? (ej: Cra 45 #95-23)', timestamp: new Date() }]);
       setConversationState('awaiting_address');
       setInputText('');
       return;
     }
 
-    // ─── CAPTURA Y GUARDADO DE DIRECCIÓN ───
+    // ── DIRECCIÓN + GUARDAR ──
     if (conversationState === 'awaiting_address') {
       const address = inputText.trim();
-
-      setMessages(prev => [...prev, {
-        id: Date.now().toString(),
-        type: 'user',
-        content: address,
-        timestamp: new Date()
-      }]);
-
-      setCustomerData(prev => ({ ...prev, address }));
-
+      setMessages(prev => [...prev, { id: Date.now().toString(), type: 'user', content: address, timestamp: new Date() }]);
       setIsProcessing(true);
 
       try {
-        const addressNormalized = normalizeAddress(address);
         const payload = {
           name: customerData.name,
           email: customerData.email,
+          cc_nit: customerData.ccNit,
           phone: customerData.phone,
           local_name: customerData.localName,
           city: customerData.city,
           neighborhood: customerData.neighborhood,
-          address: address,
-          address_normalized: addressNormalized
+          address,
+          address_normalized: normalizeAddress(address),
         };
 
         const response = await fetch('/api/customers', {
@@ -449,26 +436,16 @@ export default function ChatInterface() {
         });
 
         const data = await response.json();
-
         if (!response.ok) throw new Error(data.message);
 
-        setCustomerData(prev => ({
-          ...prev,
-          id: data.customer.id
-        }));
-
-        const isNew = data.customer.isNew;
-        const welcomeMsg = isNew
-          ? `¡Bienvenido, ${customerData.name}! 🎉`
-          : `¡Hola de nuevo, ${customerData.name}! 👋`;
+        setCustomerData(prev => ({ ...prev, address, id: data.customer.id }));
 
         setMessages(prev => [...prev, {
           id: (Date.now() + 1).toString(),
           type: 'bot',
-          content: `${welcomeMsg} Ahora sube las fotos de los productos que deseas pedir y escribe la cantidad. Yo armaré tu pedido automáticamente. 📦`,
+          content: `${data.customer.isNew ? `¡Bienvenido, ${customerData.name}! 🎉` : `¡Hola de nuevo, ${customerData.name}! 👋`} Sube las fotos de los productos y escribe la cantidad. 📦`,
           timestamp: new Date()
         }]);
-
         setConversationState('ready');
       } catch (error) {
         setMessages(prev => [...prev, {
@@ -481,14 +458,12 @@ export default function ChatInterface() {
         setIsProcessing(false);
         setInputText('');
       }
-
       return;
     }
 
     const currentText = inputText.trim();
     setInputText('');
 
-    // Mostrar texto del usuario
     setMessages(prev => [...prev, {
       id: Date.now().toString(),
       type: 'user',
@@ -496,113 +471,56 @@ export default function ChatInterface() {
       timestamp: new Date()
     }]);
 
-    // ── Manejo de confirmación de precio ──
-    const pendingPriceBot = [...messages].reverse().find(
-      m => m.type === 'bot' && m.metadata?.pendingPriceConfirm
-    );
+    // ── Confirmación de precio ──
+    const pendingPriceBot = [...messages].reverse().find(m => m.type === 'bot' && m.metadata?.pendingPriceConfirm);
 
     if (pendingPriceBot?.metadata?.ref) {
-      try {
-        const isOk = /^(si|sí|ok|okay|s|vale|claro|listo|confirmado|yes|y)$/i.test(currentText.trim());
-        const priceMatch = currentText.match(/\d{2,}/);
-        const newPrice = priceMatch ? parseInt(priceMatch[0], 10) : null;
+      const isOk = /^(si|sí|ok|okay|s|vale|claro|listo|confirmado|yes|y)$/i.test(currentText.trim());
+      const priceMatch = currentText.match(/\d{2,}/);
+      const newPrice = priceMatch ? parseInt(priceMatch[0], 10) : null;
 
-        if (isOk) {
-          // Usuario confirma el precio, pasar a cantidad
-          setMessages(prev =>
-            prev.map(m =>
-              m.id === pendingPriceBot.id
-                ? { ...m, metadata: { ...m.metadata, pendingPriceConfirm: false, pendingQuantity: true } }
-                : m
-            )
-          );
-          setMessages(prev => [...prev, {
-            id: Date.now().toString(),
-            type: 'bot',
-            content: '✅ Perfecto. ¿Cuántas unidades?',
-            timestamp: new Date()
-          }]);
-        } else if (newPrice && newPrice > 0) {
-          // Usuario proporciona nuevo precio
-          setMessages(prev =>
-            prev.map(m =>
-              m.id === pendingPriceBot.id
-                ? { ...m, metadata: { ...m.metadata, price: newPrice, pendingPriceConfirm: false, pendingQuantity: true } }
-                : m
-            )
-          );
-          setMessages(prev => [...prev, {
-            id: Date.now().toString(),
-            type: 'bot',
-            content: `✅ Precio actualizado a COP $${newPrice.toLocaleString('es-CO')}. ¿Cuántas unidades?`,
-            timestamp: new Date()
-          }]);
-        } else {
-          setMessages(prev => [...prev, {
-            id: Date.now().toString(),
-            type: 'bot',
-            content: 'No entendí. Escribe:\n✅ (para confirmar) o\n💰 (número para cambiar precio)',
-            timestamp: new Date()
-          }]);
-        }
-      } catch (error) {
-        setMessages(prev => [...prev, {
-          id: Date.now().toString(),
-          type: 'bot',
-          content: 'Hubo un error. Escribe "si" para confirmar o un número para cambiar el precio.',
-          timestamp: new Date()
-        }]);
+      if (isOk) {
+        setMessages(prev => prev.map(m =>
+          m.id === pendingPriceBot.id
+            ? { ...m, metadata: { ...m.metadata, pendingPriceConfirm: false, pendingQuantity: true } }
+            : m
+        ));
+        setMessages(prev => [...prev, { id: Date.now().toString(), type: 'bot', content: '✅ Perfecto. ¿Cuántas unidades?', timestamp: new Date() }]);
+      } else if (newPrice && newPrice > 0) {
+        setMessages(prev => prev.map(m =>
+          m.id === pendingPriceBot.id
+            ? { ...m, metadata: { ...m.metadata, price: newPrice, pendingPriceConfirm: false, pendingQuantity: true } }
+            : m
+        ));
+        setMessages(prev => [...prev, { id: Date.now().toString(), type: 'bot', content: `✅ Precio actualizado a COP $${newPrice.toLocaleString('es-CO')}. ¿Cuántas unidades?`, timestamp: new Date() }]);
+      } else {
+        setMessages(prev => [...prev, { id: Date.now().toString(), type: 'bot', content: 'Escribe "sí" para confirmar o un número para cambiar el precio.', timestamp: new Date() }]);
       }
       return;
     }
 
-    // ── Solo texto → responder cantidad pendiente ──
-    const pendingBot = [...messages].reverse().find(
-      m => m.type === 'bot' && m.metadata?.pendingQuantity
-    );
+    // ── Cantidad pendiente ──
+    const pendingBot = [...messages].reverse().find(m => m.type === 'bot' && m.metadata?.pendingQuantity);
 
     if (pendingBot?.metadata?.ref) {
-      const quantityMatch = currentText.match(/\d+/);
-      const quantity = quantityMatch ? parseInt(quantityMatch[0]) : null;
-
-      if (quantity && quantity > 0) {
-        addToOrder(
-          pendingBot.metadata.ref,
-          pendingBot.metadata.name || 'Producto',
-          quantity,
-          pendingBot.metadata.price
-        );
-        // Marcar el mensaje bot como resuelto
-        setMessages(prev =>
-          prev.map(m =>
-            m.id === pendingBot.id
-              ? { ...m, metadata: { ...m.metadata, pendingQuantity: false } }
-              : m
-          )
-        );
+      const quantity = parseInt(currentText.match(/\d+/)?.[0] || '', 10);
+      if (quantity > 0) {
+        addToOrder(pendingBot.metadata.ref, pendingBot.metadata.name || 'Producto', quantity, pendingBot.metadata.price);
+        setMessages(prev => prev.map(m =>
+          m.id === pendingBot.id ? { ...m, metadata: { ...m.metadata, pendingQuantity: false } } : m
+        ));
       } else {
-        setMessages(prev => [...prev, {
-          id: Date.now().toString(),
-          type: 'bot',
-          content: 'No entendí la cantidad. Escribe un número, por ejemplo: 24',
-          timestamp: new Date()
-        }]);
+        setMessages(prev => [...prev, { id: Date.now().toString(), type: 'bot', content: 'No entendí. Escribe un número, por ejemplo: 24', timestamp: new Date() }]);
       }
     }
   };
 
-  // ── Agregar item al pedido (suma si ya existe) ──
   const addToOrder = (ref: string, name: string, quantity: number, price?: number) => {
     setOrderItems(prev => {
       const existing = prev.find(i => i.ref === ref);
-      if (existing) {
-        return prev.map(i =>
-          i.ref === ref ? { ...i, quantity: i.quantity + quantity } : i
-        );
-      }
+      if (existing) return prev.map(i => i.ref === ref ? { ...i, quantity: i.quantity + quantity } : i);
       return [...prev, { ref, name, quantity, price }];
     });
-
     const priceLabel = price ? ` @ COP $${price.toLocaleString('es-CO')}` : '';
     setMessages(prev => [...prev, {
       id: Date.now().toString(),
@@ -612,36 +530,36 @@ export default function ChatInterface() {
     }]);
   };
 
-  // ── Confirmar pedido → enviar al admin ──
-  const handleConfirmOrder = async () => {
-    if (orderItems.length === 0) {
-      alert('No hay productos en el pedido. Agrega al menos uno.');
-      return;
-    }
+  const handleProductCardAdd = (quantity: number, price?: number) => {
+    if (!activeProduct) return;
+    addToOrder(activeProduct.ref, activeProduct.name, quantity, price);
+    setActiveProduct(null);
+  };
 
+  const handleConfirmOrder = async () => {
+    if (orderItems.length === 0) { alert('Agrega al menos un producto.'); return; }
     setIsSending(true);
     try {
       const orderId = `ORD-${Math.floor(1000 + Math.random() * 9000)}`;
-      const orderPayload = {
-        id: orderId,
-        customer: customerData.name,
-        email: customerData.email,
-        phone: customerData.phone,
-        local_name: customerData.localName,
-        city: customerData.city,
-        neighborhood: customerData.neighborhood,
-        address: customerData.address,
-        customer_id: customerData.id,
-        items: orderItems,
-        status: 'Pendiente',
-        date: new Date().toLocaleDateString('es-ES'),
-        total_items: orderItems.reduce((sum, i) => sum + i.quantity, 0)
-      };
-
       const res = await fetch('/api/orders', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(orderPayload)
+        body: JSON.stringify({
+          id: orderId,
+          customer: customerData.name,
+          email: customerData.email,
+          cc_nit: customerData.ccNit,
+          phone: customerData.phone,
+          local_name: customerData.localName,
+          city: customerData.city,
+          neighborhood: customerData.neighborhood,
+          address: customerData.address,
+          customer_id: customerData.id,
+          items: orderItems,
+          status: 'Pendiente',
+          date: new Date().toLocaleDateString('es-ES'),
+          total_items: orderItems.reduce((sum, i) => sum + i.quantity, 0)
+        })
       });
 
       if (res.ok) {
@@ -649,34 +567,41 @@ export default function ChatInterface() {
         setMessages(prev => [...prev, {
           id: Date.now().toString(),
           type: 'bot',
-          content: `🎉 ¡Pedido ${data.order?.id || orderId} confirmado! La bodega ya lo recibió y lo está preparando.`,
+          content: `🎉 ¡Pedido ${data.order?.id || orderId} confirmado! La bodega lo está preparando.`,
           timestamp: new Date()
         }]);
-        setOrderItems([]); // Limpiar pedido
+        setOrderItems([]);
       } else {
-        throw new Error('Error en la respuesta del servidor');
+        throw new Error('Error en el servidor');
       }
-    } catch (e) {
-      console.error('Error confirmando pedido:', e);
-      setMessages(prev => [...prev, {
-        id: Date.now().toString(),
-        type: 'bot',
-        content: '❌ Hubo un error al confirmar el pedido. Intenta nuevamente.',
-        timestamp: new Date()
-      }]);
+    } catch {
+      setMessages(prev => [...prev, { id: Date.now().toString(), type: 'bot', content: '❌ Error al confirmar. Intenta nuevamente.', timestamp: new Date() }]);
     } finally {
       setIsSending(false);
     }
   };
+
+  const inputPlaceholder =
+    conversationState === 'confirming_customer' ? 'sí / no...' :
+    conversationState === 'awaiting_cc_nit' ? 'CC o NIT...' :
+    conversationState === 'awaiting_name' ? 'Tu nombre...' :
+    conversationState === 'awaiting_email' ? 'Tu email...' :
+    conversationState === 'awaiting_phone' ? 'Teléfono...' :
+    conversationState === 'awaiting_local' ? 'Nombre del local...' :
+    conversationState === 'awaiting_city' ? 'Ciudad...' :
+    conversationState === 'awaiting_neighborhood' ? 'Barrio...' :
+    conversationState === 'awaiting_address' ? 'Dirección completa...' :
+    'Cantidad, número o mensaje...';
+
+  const showInput = conversationState !== 'awaiting_search';
+  const showSearchPanel = conversationState !== 'ready';
 
   return (
     <div className="flex flex-col w-full bg-[#efeae2] relative overflow-hidden" style={{ height: '100dvh' }}>
       {/* Header */}
       <header className="bg-[#00a884] text-white p-3 flex items-center justify-between z-10 shadow-md">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 bg-white/20 rounded-full flex items-center justify-center font-bold text-lg">
-            B
-          </div>
+          <div className="w-10 h-10 bg-white/20 rounded-full flex items-center justify-center font-bold text-lg">B</div>
           <div>
             <h1 className="font-semibold leading-tight">Bodega Principal</h1>
             <p className="text-xs text-white/80">en línea</p>
@@ -688,9 +613,90 @@ export default function ChatInterface() {
         </div>
       </header>
 
+      {/* Search Panel */}
+      {showSearchPanel && (
+        <div className="bg-white border-b border-gray-100 px-3 py-2.5 z-10 shadow-sm" ref={searchRef}>
+          <div className="relative">
+            <div className="flex items-center gap-2 bg-gray-100 rounded-full px-3 py-2">
+              <Search size={15} className="text-gray-400 flex-shrink-0" />
+              <input
+                type="text"
+                placeholder="Buscar por CC/NIT o nombre del cliente..."
+                value={searchQuery}
+                onChange={handleSearchInput}
+                onFocus={() => searchResults.length > 0 && setShowDropdown(true)}
+                className="flex-1 bg-transparent outline-none text-sm text-gray-800 placeholder-gray-400"
+              />
+              {searchLoading && (
+                <div className="w-4 h-4 border-2 border-gray-200 border-t-[#00a884] rounded-full animate-spin flex-shrink-0" />
+              )}
+              {searchQuery && !searchLoading && (
+                <button onMouseDown={() => { setSearchQuery(''); setShowDropdown(false); setSearchResults([]); }}>
+                  <X size={14} className="text-gray-400" />
+                </button>
+              )}
+            </div>
+
+            {/* Dropdown resultados */}
+            {showDropdown && (
+              <div className="absolute top-full left-0 right-0 mt-1 bg-white rounded-xl shadow-lg border border-gray-100 z-20 max-h-52 overflow-y-auto">
+                {searchResults.length > 0 ? (
+                  <>
+                    {searchResults.map(customer => (
+                      <button
+                        key={customer.id}
+                        onMouseDown={() => handleSelectCustomer(customer)}
+                        className="w-full text-left px-4 py-3 hover:bg-gray-50 border-b border-gray-50 last:border-0 transition-colors"
+                      >
+                        <div className="flex justify-between items-center gap-2">
+                          <div className="min-w-0">
+                            <p className="text-sm font-semibold text-gray-800 truncate">{customer.name}</p>
+                            <p className="text-xs text-gray-500 truncate">
+                              {[customer.local_name, customer.city].filter(Boolean).join(' · ')}
+                            </p>
+                          </div>
+                          {customer.cc_nit && (
+                            <span className="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full whitespace-nowrap flex-shrink-0">
+                              {customer.cc_nit}
+                            </span>
+                          )}
+                        </div>
+                      </button>
+                    ))}
+                    <button
+                      onMouseDown={handleNewCustomer}
+                      className="w-full text-center py-2.5 text-sm text-[#00a884] font-medium hover:bg-gray-50 transition-colors"
+                    >
+                      + Registrar nuevo cliente
+                    </button>
+                  </>
+                ) : !searchLoading ? (
+                  <div className="p-4 text-center">
+                    <p className="text-sm text-gray-500 mb-2">Sin resultados para &ldquo;{searchQuery}&rdquo;</p>
+                    <button onMouseDown={handleNewCustomer} className="text-sm text-[#00a884] font-semibold">
+                      + Registrar como nuevo cliente
+                    </button>
+                  </div>
+                ) : null}
+              </div>
+            )}
+          </div>
+
+          {conversationState === 'awaiting_search' && (
+            <button
+              onClick={handleNewCustomer}
+              className="mt-2 flex items-center justify-center gap-1.5 text-xs text-[#00a884] font-medium w-full py-1 hover:underline"
+            >
+              <UserPlus size={13} />
+              Registrar nuevo cliente
+            </button>
+          )}
+        </div>
+      )}
+
       {/* Chat Area */}
       <div
-        className="flex-1 overflow-y-auto p-3 space-y-3"
+        className="flex-1 overflow-y-auto p-3 space-y-3 flex flex-col"
         style={{ backgroundImage: 'url("https://user-images.githubusercontent.com/15075759/28719144-86dc0f70-73b1-11e7-911d-60d70fcded21.png")', backgroundRepeat: 'repeat', backgroundSize: '400px' }}
       >
         {messages.map((msg) => (
@@ -733,6 +739,22 @@ export default function ChatInterface() {
             </div>
           </div>
         )}
+
+        {/* Product Card */}
+        {activeProduct && (
+          <div className="flex justify-center mt-4">
+            <ProductCard
+              imageUrl={activeProduct.imageUrl}
+              ref={activeProduct.ref}
+              name={activeProduct.name}
+              price={activeProduct.price}
+              onAddToCart={handleProductCardAdd}
+              onClose={() => setActiveProduct(null)}
+              loading={isProcessing}
+            />
+          </div>
+        )}
+
         <div ref={messagesEndRef} />
       </div>
 
@@ -743,9 +765,7 @@ export default function ChatInterface() {
           <span className="font-medium text-[#00a884]">{orderItems.length}</span>
           <span>{orderItems.length === 1 ? 'producto' : 'productos'}</span>
           {orderItems.length > 0 && (
-            <span className="text-gray-400">
-              ({orderItems.reduce((s, i) => s + i.quantity, 0)} und)
-            </span>
+            <span className="text-gray-400">({orderItems.reduce((s, i) => s + i.quantity, 0)} und)</span>
           )}
           {orderItems.some(i => i.price) && (
             <span className="text-[#00a884] font-semibold ml-2">
@@ -766,108 +786,56 @@ export default function ChatInterface() {
         </button>
       </div>
 
-      {/* Image Capture (Mobile/Desktop) */}
+      {/* Image Capture */}
       {conversationState === 'ready' && (
         <div className="bg-[#f0f2f5] px-2 pt-2">
-          <ImageCapture
-            onImageCapture={handleImageCapture}
-            disabled={isProcessing}
-          />
+          <ImageCapture onImageCapture={handleImageCapture} disabled={isProcessing} />
         </div>
       )}
 
       {/* Input Area */}
-      <div className="bg-[#f0f2f5] px-2 pt-2 flex flex-col gap-2" style={{ paddingBottom: 'max(20px, env(safe-area-inset-bottom, 20px))' }}>
-        <div className="flex items-end gap-2">
-          <div className="flex-1 bg-white rounded-full px-4 py-2.5 flex items-center gap-2 shadow-sm min-h-[44px]">
-            <input
-              type="text"
-              placeholder={
-                conversationState === 'awaiting_name'
-                  ? 'Escribe tu nombre...'
-                  : conversationState === 'awaiting_email'
-                  ? 'Escribe tu email...'
-                  : conversationState === 'awaiting_phone'
-                  ? 'Escribe tu teléfono...'
-                  : conversationState === 'awaiting_local'
-                  ? 'Nombre del local...'
-                  : conversationState === 'awaiting_city'
-                  ? 'Ciudad...'
-                  : conversationState === 'awaiting_neighborhood'
-                  ? 'Barrio...'
-                  : conversationState === 'awaiting_address'
-                  ? 'Dirección completa...'
-                  : 'Cantidad, número o mensaje...'
-              }
-              className="flex-1 bg-transparent outline-none text-sm text-gray-800 placeholder-gray-400"
-              value={inputText}
-              onChange={e => setInputText(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && handleSend()}
-              disabled={isProcessing}
-            />
+      {showInput && (
+        <div className="bg-[#f0f2f5] px-2 pt-2 flex flex-col gap-2" style={{ paddingBottom: 'max(20px, env(safe-area-inset-bottom, 20px))' }}>
+          <div className="flex items-end gap-2">
+            <div className="flex-1 bg-white rounded-full px-4 py-2.5 flex items-center gap-2 shadow-sm min-h-[44px]">
+              <input
+                type="text"
+                placeholder={inputPlaceholder}
+                className="flex-1 bg-transparent outline-none text-sm text-gray-800 placeholder-gray-400"
+                value={inputText}
+                onChange={e => setInputText(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && handleSend()}
+                disabled={isProcessing}
+              />
+            </div>
+            <button
+              onClick={handleSend}
+              disabled={!inputText.trim() || isProcessing}
+              className={`p-3 rounded-full shadow-sm transition-all flex-shrink-0 ${
+                inputText.trim() && !isProcessing
+                  ? 'bg-[#00a884] text-white hover:bg-[#008f6f] active:scale-95'
+                  : 'bg-[#00a884] text-white opacity-50 cursor-not-allowed'
+              }`}
+            >
+              <Send size={20} />
+            </button>
           </div>
-          <button
-            onClick={handleSend}
-            disabled={!inputText.trim() || isProcessing}
-            className={`p-3 rounded-full shadow-sm transition-all flex-shrink-0 ${
-              inputText.trim() && !isProcessing
-                ? 'bg-[#00a884] text-white hover:bg-[#008f6f] active:scale-95'
-                : 'bg-[#00a884] text-white opacity-50 cursor-not-allowed'
-            }`}
-          >
-            <Send size={20} />
-          </button>
         </div>
-      </div>
+      )}
 
       {/* Modal Ver Imagen */}
       {selectedImage && (
-        <div
-          className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4"
-          onClick={() => setSelectedImage(null)}
-        >
-          <div
-            className="relative bg-white rounded-2xl shadow-2xl max-w-2xl max-h-[90vh] flex items-center justify-center"
-            onClick={(e) => e.stopPropagation()}
-          >
-            {/* Botón cerrar */}
-            <button
-              onClick={() => setSelectedImage(null)}
-              className="absolute top-4 right-4 bg-white rounded-full p-2 shadow-lg hover:bg-gray-100 z-10"
-            >
-              <svg
-                className="w-6 h-6"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M6 18L18 6M6 6l12 12"
-                />
+        <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4" onClick={() => setSelectedImage(null)}>
+          <div className="relative bg-white rounded-2xl shadow-2xl max-w-2xl max-h-[90vh] flex items-center justify-center" onClick={e => e.stopPropagation()}>
+            <button onClick={() => setSelectedImage(null)} className="absolute top-4 right-4 bg-white rounded-full p-2 shadow-lg hover:bg-gray-100 z-10">
+              <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
               </svg>
             </button>
-
-            {/* Imagen ampliada */}
-            <img
-              src={selectedImage.url}
-              alt="Vista ampliada"
-              className="max-w-full max-h-[85vh] object-contain rounded-xl"
-            />
-
-            {/* Info y acciones */}
+            <img src={selectedImage.url} alt="Vista ampliada" className="max-w-full max-h-[85vh] object-contain rounded-xl" />
             <div className="absolute bottom-4 left-4 right-4 bg-white/95 backdrop-blur rounded-lg p-3 flex gap-2 justify-between items-center">
-              <span className="text-xs text-gray-600 font-medium">
-                Click para cerrar o usar botón X
-              </span>
-              <button
-                onClick={() => setSelectedImage(null)}
-                className="bg-[#00a884] text-white px-3 py-1.5 rounded-lg text-xs font-medium hover:bg-[#008f6f] transition-colors"
-              >
-                Cerrar
-              </button>
+              <span className="text-xs text-gray-600 font-medium">Click para cerrar</span>
+              <button onClick={() => setSelectedImage(null)} className="bg-[#00a884] text-white px-3 py-1.5 rounded-lg text-xs font-medium hover:bg-[#008f6f]">Cerrar</button>
             </div>
           </div>
         </div>
