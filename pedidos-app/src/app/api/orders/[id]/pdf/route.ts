@@ -1,5 +1,6 @@
 import { jsPDF } from 'jspdf';
 import { NextRequest, NextResponse } from 'next/server';
+import { getSupabase } from '@/lib/supabase-server';
 
 interface OrderItem {
   ref: string;
@@ -30,28 +31,46 @@ export async function GET(
   try {
     const { id: orderId } = await params;
 
-    // Fetch order from API
-    const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
-    const ordersRes = await fetch(`${baseUrl}/api/orders`, {
-      headers: request.headers,
-    });
+    const { data: raw, error } = await getSupabase()
+      .from('orders')
+      .select(`
+        id,
+        status,
+        total,
+        created_at,
+        customers (name, email, phone, local_name, city, neighborhood, address),
+        order_items (product_ref, product_name, quantity, price_at_time)
+      `)
+      .eq('id', orderId)
+      .single();
 
-    if (!ordersRes.ok) {
-      return NextResponse.json(
-        { error: 'No se pudo obtener los pedidos' },
-        { status: 500 }
-      );
-    }
-
-    const data = await ordersRes.json();
-    const order: Order | undefined = data.orders?.find((o: Order) => o.id === orderId);
-
-    if (!order) {
+    if (error || !raw) {
       return NextResponse.json(
         { error: 'Pedido no encontrado' },
         { status: 404 }
       );
     }
+
+    const c = raw.customers as unknown as { name: string; email: string; phone: string; local_name: string; city: string; neighborhood: string; address: string } | null;
+    const order: Order = {
+      id: raw.id,
+      customer: c?.name || 'Sin nombre',
+      email: c?.email,
+      phone: c?.phone,
+      local_name: c?.local_name,
+      city: c?.city,
+      neighborhood: c?.neighborhood,
+      address: c?.address,
+      status: raw.status,
+      total: raw.total,
+      created_at: raw.created_at,
+      items: ((raw.order_items as any[]) || []).map((oi) => ({
+        ref: oi.product_ref,
+        name: oi.product_name || oi.product_ref,
+        quantity: oi.quantity,
+        price: oi.price_at_time,
+      })),
+    };
 
     // Generate PDF
     const doc = new jsPDF({

@@ -8,21 +8,23 @@ export async function GET() {
   try {
     const supabase = getSupabase();
 
-    // Traer todos los pedidos con sus items
+    // Traer todos los pedidos con sus items y datos del cliente
     const { data: orders, error } = await supabase
       .from('orders')
       .select(`
         id,
-        customer,
-        email,
-        phone,
-        local_name,
-        city,
-        neighborhood,
-        address,
         status,
         total,
         created_at,
+        customers (
+          name,
+          email,
+          phone,
+          local_name,
+          city,
+          neighborhood,
+          address
+        ),
         order_items (
           product_ref,
           product_name,
@@ -38,6 +40,16 @@ export async function GET() {
     const rows: Record<string, string | number>[] = [];
 
     for (const order of orders || []) {
+      const customer = order.customers as unknown as {
+        name: string;
+        email: string;
+        phone: string;
+        local_name: string;
+        city: string;
+        neighborhood: string;
+        address: string;
+      } | null;
+
       const items = (order.order_items as {
         product_ref: string;
         product_name: string;
@@ -50,13 +62,13 @@ export async function GET() {
           'Pedido ID':   order.id,
           'Estado':      order.status,
           'Fecha':       order.created_at ? new Date(order.created_at).toLocaleDateString('es-CO') : '',
-          'Cliente':     order.customer || '',
-          'Email':       order.email || '',
-          'Teléfono':    order.phone || '',
-          'Local':       order.local_name || '',
-          'Ciudad':      order.city || '',
-          'Barrio':      order.neighborhood || '',
-          'Dirección':   order.address || '',
+          'Cliente':     customer?.name || '',
+          'Email':       customer?.email || '',
+          'Teléfono':    customer?.phone || '',
+          'Local':       customer?.local_name || '',
+          'Ciudad':      customer?.city || '',
+          'Barrio':      customer?.neighborhood || '',
+          'Dirección':   customer?.address || '',
           'REF':         '',
           'Producto':    '',
           'Cantidad':    0,
@@ -70,13 +82,13 @@ export async function GET() {
             'Pedido ID':   order.id,
             'Estado':      order.status,
             'Fecha':       order.created_at ? new Date(order.created_at).toLocaleDateString('es-CO') : '',
-            'Cliente':     order.customer || '',
-            'Email':       order.email || '',
-            'Teléfono':    order.phone || '',
-            'Local':       order.local_name || '',
-            'Ciudad':      order.city || '',
-            'Barrio':      order.neighborhood || '',
-            'Dirección':   order.address || '',
+            'Cliente':     customer?.name || '',
+            'Email':       customer?.email || '',
+            'Teléfono':    customer?.phone || '',
+            'Local':       customer?.local_name || '',
+            'Ciudad':      customer?.city || '',
+            'Barrio':      customer?.neighborhood || '',
+            'Dirección':   customer?.address || '',
             'REF':         item.product_ref || '',
             'Producto':    item.product_name || '',
             'Cantidad':    item.quantity || 0,
