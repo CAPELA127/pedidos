@@ -41,7 +41,7 @@ export async function GET(
     if (refs.length > 0) {
       const { data: inv } = await getSupabase()
         .from('INVENTARIO EL PUNTAZO')
-        .select('Referencia, Producto')
+        .select('Referencia, Producto, "P. Venta"')
         .in('Referencia', refs);
       if (inv) {
         inv.forEach((row: any) => {
