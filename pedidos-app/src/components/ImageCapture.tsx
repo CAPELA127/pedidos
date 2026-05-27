@@ -156,14 +156,14 @@ export default function ImageCapture({ onImageCapture, disabled = false }: Image
       {/* Modo file picker / drag & drop */}
       {!isCameraActive && (
         <div className="flex flex-col gap-2">
-          {/* Drag & drop zone — label activa el input en iOS sin .click() */}
+          {/* Drag & drop zone — solo escritorio */}
           <label
             htmlFor={disabled ? undefined : 'image-file-input'}
             onDragEnter={handleDrag}
             onDragLeave={handleDrag}
             onDragOver={handleDrag}
             onDrop={handleDrop}
-            className={`border-2 border-dashed rounded-lg p-4 text-center transition-colors ${
+            className={`hidden md:block border-2 border-dashed rounded-lg p-4 text-center transition-colors ${
               dragActive
                 ? 'border-blue-500 bg-blue-50'
                 : 'border-gray-300 bg-gray-50 hover:border-blue-400'

@@ -190,13 +190,11 @@ export default function Dashboard() {
 
   const TABS = [
     { key: 'Pendiente', label: 'Pendientes', Icon: Package, color: 'text-orange-500' },
-    { key: 'Empacado', label: 'Empacados', Icon: CheckCircle, color: 'text-blue-500' },
     { key: 'Enviado', label: 'Enviados', Icon: Truck, color: 'text-green-500' },
   ];
 
   const counts = {
     Pendiente: orders.filter(o => o.status === 'Pendiente').length,
-    Empacado: orders.filter(o => o.status === 'Empacado').length,
     Enviado: orders.filter(o => o.status === 'Enviado').length,
   };
 
@@ -222,7 +220,7 @@ export default function Dashboard() {
 
       <div className="px-4 md:px-8 py-4 md:py-6">
         {/* Stats */}
-        <div className="grid grid-cols-3 gap-3 mb-5">
+        <div className="grid grid-cols-2 gap-3 mb-5">
           {TABS.map(({ key, label, Icon, color }) => (
             <button
               key={key}
@@ -317,14 +315,6 @@ export default function Dashboard() {
                             Editar
                           </button>
                           {activeTab === 'Pendiente' && (
-                            <button
-                              onClick={() => updateStatus(order.id, 'Empacado')}
-                              className="text-xs bg-blue-50 text-blue-600 border border-blue-200 px-2.5 py-1.5 rounded-lg hover:bg-blue-100 transition-colors font-medium whitespace-nowrap"
-                            >
-                              Empacar
-                            </button>
-                          )}
-                          {activeTab === 'Empacado' && (
                             <button
                               onClick={() => updateStatus(order.id, 'Enviado')}
                               className="text-xs bg-green-50 text-green-600 border border-green-200 px-2.5 py-1.5 rounded-lg hover:bg-green-100 transition-colors font-medium whitespace-nowrap"

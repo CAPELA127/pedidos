@@ -27,10 +27,11 @@ export async function GET(
       return NextResponse.json({ error: 'Pedido no encontrado' }, { status: 404 });
     }
 
-    const c = raw.customers as unknown as {
-      name: string; email: string; phone: string;
-      local_name: string; city: string; neighborhood: string; address: string;
-    } | null;
+    type CustomerRow = { name: string; email: string; phone: string; local_name: string; city: string; neighborhood: string; address: string };
+    const rawCustomers = raw.customers as unknown as CustomerRow | CustomerRow[] | null;
+    const c: CustomerRow | null = Array.isArray(rawCustomers)
+      ? rawCustomers[0] ?? null
+      : rawCustomers ?? null;
 
     const rawItems = (raw.order_items as any[]) || [];
 

@@ -621,9 +621,24 @@ export default function ChatInterface() {
     }]);
   };
 
-  const handleProductCardAdd = (quantity: number, price?: number) => {
+  const handleProductCardAdd = (quantity: number, price: number, name: string) => {
     if (!activeProduct) return;
-    addToOrder(activeProduct.ref, activeProduct.name, quantity, price);
+    // Replace semantics: ProductCard siempre establece la cantidad exacta
+    setOrderItems(prev => {
+      const existing = prev.find(i => i.ref === activeProduct.ref);
+      if (existing) {
+        return prev.map(i =>
+          i.ref === activeProduct.ref ? { ...i, name, quantity, price } : i
+        );
+      }
+      return [...prev, { ref: activeProduct.ref, name, quantity, price }];
+    });
+    setMessages(prev => [...prev, {
+      id: Date.now().toString(),
+      type: 'system',
+      content: `✅ ${name}: ${quantity} und @ COP $${price.toLocaleString('es-CO')}`,
+      timestamp: new Date()
+    }]);
     setActiveProduct(null);
   };
 
@@ -837,10 +852,10 @@ export default function ChatInterface() {
 
         {/* Product Card */}
         {activeProduct && (
-          <div className="flex justify-center mt-4">
+          <div className="flex justify-center mt-4 px-2">
             <ProductCard
               imageUrl={activeProduct.imageUrl}
-              ref={activeProduct.ref}
+              productRef={activeProduct.ref}
               name={activeProduct.name}
               price={activeProduct.price}
               onAddToCart={handleProductCardAdd}
