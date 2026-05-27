@@ -1,16 +1,17 @@
 "use client";
 
 import React, { useState, useRef, useEffect } from 'react';
-import { Send, Check, MoreVertical, Phone, ShoppingCart, Search, UserPlus, X } from 'lucide-react';
-import ImageCapture from '../ImageCapture';
+import { Send, Check, MoreVertical, Phone, ShoppingCart, Search, UserPlus, X, Camera, Upload } from 'lucide-react';
 import ProductCard from '../ProductCard';
 import { normalizeAddress, validatePhoneNumber } from '@/lib/normalize-address';
 
 interface OrderItem {
+  itemId: string;
   ref: string;
   name: string;
   quantity: number;
   price?: number;
+  notes?: string;
 }
 
 interface Message {
@@ -606,37 +607,40 @@ export default function ChatInterface() {
     }
   };
 
-  const addToOrder = (ref: string, name: string, quantity: number, price?: number) => {
+  const addToOrder = (ref: string, name: string, quantity: number, price?: number, notes?: string) => {
     setOrderItems(prev => {
-      const existing = prev.find(i => i.ref === ref);
-      if (existing) return prev.map(i => i.ref === ref ? { ...i, quantity: i.quantity + quantity } : i);
-      return [...prev, { ref, name, quantity, price }];
+      const notesKey = (notes || '').trim().toLowerCase();
+      const existing = prev.find(i => i.ref === ref && (i.notes || '').trim().toLowerCase() === notesKey);
+      if (existing) return prev.map(i => i.itemId === existing.itemId ? { ...i, quantity: i.quantity + quantity } : i);
+      return [...prev, { itemId: `${ref}_${Date.now()}`, ref, name, quantity, price, notes: notes || undefined }];
     });
+    const label = notes ? `${name} (${notes})` : name;
     const priceLabel = price ? ` @ COP $${price.toLocaleString('es-CO')}` : '';
     setMessages(prev => [...prev, {
       id: Date.now().toString(),
       type: 'system',
-      content: `✅ Agregado: ${quantity} und de ${name}${priceLabel}`,
+      content: `✅ Agregado: ${quantity} und de ${label}${priceLabel}`,
       timestamp: new Date()
     }]);
   };
 
-  const handleProductCardAdd = (quantity: number, price: number, name: string) => {
+  const handleProductCardAdd = (quantity: number, price: number, name: string, notes?: string) => {
     if (!activeProduct) return;
-    // Replace semantics: ProductCard siempre establece la cantidad exacta
+    const notesKey = (notes || '').trim().toLowerCase();
     setOrderItems(prev => {
-      const existing = prev.find(i => i.ref === activeProduct.ref);
+      const existing = prev.find(i =>
+        i.ref === activeProduct.ref && (i.notes || '').trim().toLowerCase() === notesKey
+      );
       if (existing) {
-        return prev.map(i =>
-          i.ref === activeProduct.ref ? { ...i, name, quantity, price } : i
-        );
+        return prev.map(i => i.itemId === existing.itemId ? { ...i, name, quantity, price, notes: notes || undefined } : i);
       }
-      return [...prev, { ref: activeProduct.ref, name, quantity, price }];
+      return [...prev, { itemId: `${activeProduct.ref}_${Date.now()}`, ref: activeProduct.ref, name, quantity, price, notes: notes || undefined }];
     });
+    const label = notes ? `${name} (${notes})` : name;
     setMessages(prev => [...prev, {
       id: Date.now().toString(),
       type: 'system',
-      content: `✅ ${name}: ${quantity} und @ COP $${price.toLocaleString('es-CO')}`,
+      content: `✅ ${label}: ${quantity} und @ COP $${price.toLocaleString('es-CO')}`,
       timestamp: new Date()
     }]);
     setActiveProduct(null);
@@ -661,7 +665,12 @@ export default function ChatInterface() {
           neighborhood: customerData.neighborhood,
           address: customerData.address,
           customer_id: customerData.id,
-          items: orderItems,
+          items: orderItems.map(i => ({
+            ref: i.ref,
+            name: i.notes ? `${i.name} (${i.notes})` : i.name,
+            quantity: i.quantity,
+            price: i.price,
+          })),
           status: 'Pendiente',
           date: new Date().toLocaleDateString('es-ES'),
           total_items: orderItems.reduce((sum, i) => sum + i.quantity, 0)
@@ -707,7 +716,7 @@ export default function ChatInterface() {
   const showSearchPanel = conversationState !== 'ready';
 
   return (
-    <div className="flex flex-col w-full bg-[#efeae2] relative overflow-hidden" style={{ height: '100dvh' }}>
+    <div className="flex flex-col w-full bg-[#efeae2] relative overflow-x-hidden" style={{ height: '100dvh' }}>
       {/* Header */}
       <header className="bg-[#00a884] text-white p-3 flex items-center justify-between z-10 shadow-md">
         <div className="flex items-center gap-3">
@@ -896,42 +905,89 @@ export default function ChatInterface() {
         </button>
       </div>
 
-      {/* Image Capture */}
-      {conversationState === 'ready' && (
-        <div className="bg-[#f0f2f5] px-2 pt-2">
-          <ImageCapture onImageCapture={handleImageCapture} disabled={isProcessing} />
-        </div>
-      )}
+      {/* Bottom bar — cámara + archivo + texto + enviar en una sola fila */}
+      <div
+        className="bg-[#f0f2f5] px-3 pt-2 pb-3 flex-shrink-0"
+        style={{ paddingBottom: 'max(12px, env(safe-area-inset-bottom))' }}
+      >
+        <div className="flex items-center gap-2">
+          {/* Botones de imagen (solo cuando ready) */}
+          {conversationState === 'ready' && (
+            <>
+              {/* Cámara — abre cámara directamente en móvil */}
+              <label
+                htmlFor={isProcessing ? undefined : 'chat-cam-input'}
+                className={`p-2.5 bg-white rounded-full shadow-sm flex-shrink-0 ${isProcessing ? 'opacity-40' : 'cursor-pointer hover:bg-gray-100 active:scale-95'}`}
+                title="Tomar foto"
+              >
+                <Camera size={20} className="text-gray-500" />
+              </label>
+              <input
+                id="chat-cam-input"
+                type="file"
+                accept="image/*"
+                capture="environment"
+                className="hidden"
+                disabled={isProcessing}
+                onChange={e => {
+                  const f = e.target.files?.[0];
+                  if (f) { handleImageCapture(f); e.target.value = ''; }
+                }}
+              />
 
-      {/* Input Area */}
-      {showInput && (
-        <div className="bg-[#f0f2f5] px-2 pt-2 flex flex-col gap-2" style={{ paddingBottom: 'max(20px, env(safe-area-inset-bottom, 20px))' }}>
-          <div className="flex items-end gap-2">
-            <div className="flex-1 bg-white rounded-full px-4 py-2.5 flex items-center gap-2 shadow-sm min-h-[44px]">
+              {/* Archivo / galería */}
+              <label
+                htmlFor={isProcessing ? undefined : 'chat-file-input'}
+                className={`p-2.5 bg-white rounded-full shadow-sm flex-shrink-0 ${isProcessing ? 'opacity-40' : 'cursor-pointer hover:bg-gray-100 active:scale-95'}`}
+                title="Subir archivo"
+              >
+                <Upload size={20} className="text-gray-500" />
+              </label>
+              <input
+                id="chat-file-input"
+                type="file"
+                accept="image/*"
+                className="hidden"
+                disabled={isProcessing}
+                onChange={e => {
+                  const f = e.target.files?.[0];
+                  if (f) { handleImageCapture(f); e.target.value = ''; }
+                }}
+              />
+            </>
+          )}
+
+          {/* Input de texto */}
+          {showInput && (
+            <div className="flex-1 bg-white rounded-full px-4 py-2.5 shadow-sm flex items-center min-h-[44px]">
               <input
                 type="text"
                 placeholder={inputPlaceholder}
-                className="flex-1 bg-transparent outline-none text-sm text-gray-800 placeholder-gray-400"
+                className="w-full bg-transparent outline-none text-sm text-gray-800 placeholder-gray-400"
                 value={inputText}
                 onChange={e => setInputText(e.target.value)}
                 onKeyDown={e => e.key === 'Enter' && handleSend()}
                 disabled={isProcessing}
               />
             </div>
+          )}
+
+          {/* Botón enviar */}
+          {showInput && (
             <button
               onClick={handleSend}
               disabled={!inputText.trim() || isProcessing}
-              className={`p-3 rounded-full shadow-sm transition-all flex-shrink-0 ${
+              className={`p-2.5 rounded-full shadow-sm flex-shrink-0 transition-all ${
                 inputText.trim() && !isProcessing
                   ? 'bg-[#00a884] text-white hover:bg-[#008f6f] active:scale-95'
-                  : 'bg-[#00a884] text-white opacity-50 cursor-not-allowed'
+                  : 'bg-[#00a884] text-white opacity-40 cursor-not-allowed'
               }`}
             >
               <Send size={20} />
             </button>
-          </div>
+          )}
         </div>
-      )}
+      </div>
 
       {/* Modal Ver Imagen */}
       {selectedImage && (
