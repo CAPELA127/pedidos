@@ -118,14 +118,19 @@ Ejemplos de referencias válidas: "4031-3", "25872", "AB-456", "123456"`,
     // Búsqueda exacta
     const { data: exact } = await supabase
       .from('INVENTARIO EL PUNTAZO')
-      .select('Referencia, Producto')
+      .select('Referencia, Producto, Precio')
       .eq('Referencia', ref)
       .limit(1);
 
     if (exact && exact.length > 0) {
       return NextResponse.json({
         success: true,
-        data: { ref: exact[0].Referencia, name: exact[0].Producto, price, rawText },
+        data: {
+          ref: exact[0].Referencia,
+          name: exact[0].Producto,
+          price: exact[0].Precio ?? price,
+          rawText,
+        },
         confidence: 95,
         processingTime: Date.now() - startTime,
       });
@@ -134,14 +139,19 @@ Ejemplos de referencias válidas: "4031-3", "25872", "AB-456", "123456"`,
     // Búsqueda fuzzy
     const { data: fuzzy } = await supabase
       .from('INVENTARIO EL PUNTAZO')
-      .select('Referencia, Producto')
+      .select('Referencia, Producto, Precio')
       .ilike('Referencia', `%${ref}%`)
       .limit(1);
 
     if (fuzzy && fuzzy.length > 0) {
       return NextResponse.json({
         success: true,
-        data: { ref: fuzzy[0].Referencia, name: fuzzy[0].Producto, price, rawText },
+        data: {
+          ref: fuzzy[0].Referencia,
+          name: fuzzy[0].Producto,
+          price: fuzzy[0].Precio ?? price,
+          rawText,
+        },
         confidence: 75,
         processingTime: Date.now() - startTime,
       });

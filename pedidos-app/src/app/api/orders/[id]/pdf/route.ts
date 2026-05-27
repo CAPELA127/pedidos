@@ -1,28 +1,7 @@
+import autoTable from 'jspdf-autotable';
 import { jsPDF } from 'jspdf';
 import { NextRequest, NextResponse } from 'next/server';
 import { getSupabase } from '@/lib/supabase-server';
-
-interface OrderItem {
-  ref: string;
-  name: string;
-  quantity: number;
-  price?: number;
-}
-
-interface Order {
-  id: string;
-  customer: string;
-  email?: string;
-  phone?: string;
-  local_name?: string;
-  city?: string;
-  neighborhood?: string;
-  address?: string;
-  items: OrderItem[];
-  status: string;
-  total: number;
-  created_at?: string;
-}
 
 export async function GET(
   request: NextRequest,
@@ -45,229 +24,173 @@ export async function GET(
       .single();
 
     if (error || !raw) {
-      return NextResponse.json(
-        { error: 'Pedido no encontrado' },
-        { status: 404 }
-      );
+      return NextResponse.json({ error: 'Pedido no encontrado' }, { status: 404 });
     }
 
-    const c = raw.customers as unknown as { name: string; email: string; phone: string; local_name: string; city: string; neighborhood: string; address: string } | null;
-    const order: Order = {
-      id: raw.id,
-      customer: c?.name || 'Sin nombre',
-      email: c?.email,
-      phone: c?.phone,
-      local_name: c?.local_name,
-      city: c?.city,
-      neighborhood: c?.neighborhood,
-      address: c?.address,
-      status: raw.status,
-      total: raw.total,
-      created_at: raw.created_at,
-      items: ((raw.order_items as any[]) || []).map((oi) => ({
-        ref: oi.product_ref,
-        name: oi.product_name || oi.product_ref,
-        quantity: oi.quantity,
-        price: oi.price_at_time,
-      })),
-    };
+    const c = raw.customers as unknown as {
+      name: string; email: string; phone: string;
+      local_name: string; city: string; neighborhood: string; address: string;
+    } | null;
 
-    // Generate PDF
-    const doc = new jsPDF({
-      orientation: 'portrait',
-      unit: 'mm',
-      format: 'a4',
-    });
+    const rawItems = (raw.order_items as any[]) || [];
 
+    // Buscar nombres completos en inventario por referencia
+    const refs = rawItems.map((oi) => oi.product_ref).filter(Boolean);
+    let inventarioMap: Record<string, string> = {};
+    if (refs.length > 0) {
+      const { data: inv } = await getSupabase()
+        .from('INVENTARIO EL PUNTAZO')
+        .select('Referencia, Producto')
+        .in('Referencia', refs);
+      if (inv) {
+        inv.forEach((row: any) => {
+          inventarioMap[row.Referencia] = row.Producto;
+        });
+      }
+    }
+
+    const items = rawItems.map((oi) => ({
+      ref: oi.product_ref,
+      name: inventarioMap[oi.product_ref] || oi.product_name || oi.product_ref,
+      quantity: oi.quantity,
+      price: oi.price_at_time,
+    }));
+
+    // ── PDF ────────────────────────────────────────────────────────────────────
+    const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
     const pageWidth = doc.internal.pageSize.getWidth();
-    const pageHeight = doc.internal.pageSize.getHeight();
     const margin = 15;
     const contentWidth = pageWidth - 2 * margin;
-    let yPosition = margin;
 
-    // Header
-    doc.setFillColor(0, 168, 132); // #00a884
-    doc.rect(0, 0, pageWidth, 30, 'F');
-
+    // Header verde
+    doc.setFillColor(0, 168, 132);
+    doc.rect(0, 0, pageWidth, 32, 'F');
     doc.setTextColor(255, 255, 255);
-    doc.setFontSize(24);
-    doc.setFont('Arial', 'bold');
-    doc.text('PEDIDO', margin, 15);
+    doc.setFontSize(22);
+    doc.setFont('helvetica', 'bold');
+    doc.text('PEDIDO', margin, 16);
+    doc.setFontSize(13);
+    doc.setFont('helvetica', 'normal');
+    doc.text(raw.id, margin, 26);
 
-    doc.setFontSize(14);
-    doc.setFont('Arial', 'normal');
-    doc.text(order.id, margin, 25);
-
-    yPosition = 40;
-
-    // Order Info Box
-    doc.setTextColor(0, 0, 0);
-    doc.setFontSize(10);
-    doc.setFont('Arial', 'bold');
-    doc.text('INFORMACIÓN DEL PEDIDO', margin, yPosition);
-    yPosition += 6;
-
-    const infoBox = {
-      x: margin,
-      y: yPosition,
-      width: contentWidth / 2 - 2,
-      height: 24,
-    };
-
-    doc.setDrawColor(200, 200, 200);
-    doc.rect(infoBox.x, infoBox.y, infoBox.width, infoBox.height);
-
+    // Fecha y estado arriba a la derecha
     doc.setFontSize(9);
-    doc.setFont('Arial', 'normal');
-    doc.text(`Estado: ${order.status}`, infoBox.x + 3, infoBox.y + 6);
+    const fechaStr = raw.created_at
+      ? new Date(raw.created_at).toLocaleDateString('es-CO')
+      : 'N/A';
+    doc.text(`Fecha: ${fechaStr}`, pageWidth - margin, 16, { align: 'right' });
+    doc.text(`Estado: ${raw.status}`, pageWidth - margin, 22, { align: 'right' });
     doc.text(
-      `Fecha: ${order.created_at ? new Date(order.created_at).toLocaleDateString('es-CO') : 'N/A'}`,
-      infoBox.x + 3,
-      infoBox.y + 12
-    );
-    doc.text(
-      `Total: COP $${(order.total || 0).toLocaleString('es-CO')}`,
-      infoBox.x + 3,
-      infoBox.y + 18
+      `Total: COP $${(raw.total || 0).toLocaleString('es-CO')}`,
+      pageWidth - margin,
+      28,
+      { align: 'right' }
     );
 
-    yPosition += 28;
+    let y = 40;
 
-    // Customer Details Section
-    doc.setFontSize(10);
-    doc.setFont('Arial', 'bold');
-    doc.text('DATOS DEL CLIENTE', margin, yPosition);
-    yPosition += 6;
+    // ── Datos del cliente ──────────────────────────────────────────────────────
+    doc.setTextColor(0, 0, 0);
+    doc.setFontSize(9);
+    doc.setFont('helvetica', 'bold');
+    doc.text('DATOS DEL CLIENTE', margin, y);
+    y += 3;
 
-    const customerDetails = [
-      ['Cliente:', order.customer],
-      ['Email:', order.email || 'N/A'],
-      ['Teléfono:', order.phone || 'N/A'],
-      ['Local/Negocio:', order.local_name || 'N/A'],
-      ['Ciudad:', order.city || 'N/A'],
-      ['Barrio:', order.neighborhood || 'N/A'],
-      ['Dirección:', order.address || 'N/A'],
+    const clienteRows = [
+      ['Cliente', c?.name || 'Sin nombre'],
+      ['Email', c?.email || 'N/A'],
+      ['Teléfono', c?.phone || 'N/A'],
+      ['Local / Negocio', c?.local_name || 'N/A'],
+      ['Ciudad', c?.city || 'N/A'],
+      ['Barrio', c?.neighborhood || 'N/A'],
+      ['Dirección', c?.address || 'N/A'],
     ];
 
+    autoTable(doc, {
+      startY: y,
+      body: clienteRows,
+      theme: 'grid',
+      styles: { fontSize: 8, cellPadding: 2 },
+      columnStyles: {
+        0: { fontStyle: 'bold', cellWidth: 38, fillColor: [245, 245, 245] },
+        1: { cellWidth: contentWidth - 38 },
+      },
+      margin: { left: margin, right: margin },
+    });
+
+    y = (doc as any).lastAutoTable.finalY + 8;
+
+    // ── Tabla de productos ─────────────────────────────────────────────────────
     doc.setFontSize(9);
-    doc.setFont('Arial', 'normal');
+    doc.setFont('helvetica', 'bold');
+    doc.text('PRODUCTOS', margin, y);
+    y += 3;
 
-    for (const [label, value] of customerDetails) {
-      if (yPosition > pageHeight - 30) {
-        doc.addPage();
-        yPosition = margin;
-      }
-
-      doc.setFont('Arial', 'bold');
-      doc.text(label, margin, yPosition);
-      doc.setFont('Arial', 'normal');
-      const splitText = doc.splitTextToSize(
-        String(value),
-        contentWidth - 50
-      );
-      doc.text(splitText, margin + 50, yPosition);
-      yPosition += Math.max(5, splitText.length * 4);
-    }
-
-    yPosition += 4;
-
-    // Products Section
-    if (yPosition > pageHeight - 50) {
-      doc.addPage();
-      yPosition = margin;
-    }
-
-    doc.setFontSize(10);
-    doc.setFont('Arial', 'bold');
-    doc.text('PRODUCTOS', margin, yPosition);
-    yPosition += 8;
-
-    // Table Header
-    const col1 = margin;
-    const col2 = margin + 50;
-    const col3 = margin + 90;
-    const col4 = margin + 120;
-    const col5 = margin + 150;
-
-    doc.setFillColor(240, 240, 240);
-    doc.rect(col1 - 2, yPosition - 5, contentWidth + 4, 8, 'F');
-
-    doc.setFontSize(8);
-    doc.setFont('Arial', 'bold');
-    doc.text('REF', col1, yPosition);
-    doc.text('Producto', col2, yPosition);
-    doc.text('Cant', col3, yPosition);
-    doc.text('Precio', col4, yPosition);
-    doc.text('Subtotal', col5, yPosition);
-
-    yPosition += 6;
-    doc.setFont('Arial', 'normal');
-
-    let totalAmount = 0;
-    for (const item of order.items) {
-      if (yPosition > pageHeight - 20) {
-        doc.addPage();
-        yPosition = margin;
-      }
-
+    const productBody = items.map((item) => {
       const subtotal = (item.price || 0) * item.quantity;
-      totalAmount += subtotal;
+      return [
+        item.ref,
+        item.name,
+        item.quantity,
+        item.price ? `$${(item.price).toLocaleString('es-CO')}` : '-',
+        `$${subtotal.toLocaleString('es-CO')}`,
+      ];
+    });
 
-      doc.setFontSize(8);
-      doc.text(item.ref, col1, yPosition);
+    // Fila de total
+    productBody.push([
+      '', '', '', { content: 'TOTAL', styles: { fontStyle: 'bold' } } as any,
+      {
+        content: `$${(raw.total || 0).toLocaleString('es-CO')}`,
+        styles: { fontStyle: 'bold', textColor: [0, 100, 80] },
+      } as any,
+    ]);
 
-      const productName = doc.splitTextToSize(item.name, 35);
-      doc.text(productName, col2, yPosition);
-
-      doc.text(String(item.quantity), col3, yPosition);
-      doc.text(`COP $${(item.price || 0).toLocaleString('es-CO')}`, col4, yPosition);
-      doc.text(`COP $${subtotal.toLocaleString('es-CO')}`, col5, yPosition);
-
-      yPosition += Math.max(5, productName.length * 3.5) + 2;
-    }
-
-    // Total Line
-    yPosition += 4;
-    doc.setDrawColor(200, 200, 200);
-    doc.line(col1 - 2, yPosition, pageWidth - margin + 2, yPosition);
-    yPosition += 5;
-
-    doc.setFontSize(10);
-    doc.setFont('Arial', 'bold');
-    doc.text('TOTAL:', col1, yPosition);
-    doc.text(`COP $${order.total.toLocaleString('es-CO')}`, col5 - 20, yPosition);
+    autoTable(doc, {
+      startY: y,
+      head: [['REF', 'Producto', 'Cant.', 'Precio Unit.', 'Subtotal']],
+      body: productBody,
+      theme: 'grid',
+      styles: { fontSize: 8, cellPadding: 2.5, overflow: 'linebreak' },
+      headStyles: {
+        fillColor: [0, 168, 132],
+        textColor: [255, 255, 255],
+        fontStyle: 'bold',
+        halign: 'center',
+      },
+      columnStyles: {
+        0: { cellWidth: 28, halign: 'center' },
+        1: { cellWidth: 'auto' },
+        2: { cellWidth: 16, halign: 'center' },
+        3: { cellWidth: 32, halign: 'right' },
+        4: { cellWidth: 32, halign: 'right' },
+      },
+      alternateRowStyles: { fillColor: [248, 252, 250] },
+      margin: { left: margin, right: margin },
+    });
 
     // Footer
-    yPosition = pageHeight - 15;
-    doc.setFontSize(8);
-    doc.setFont('Arial', 'normal');
-    doc.setTextColor(100, 100, 100);
+    const pageHeight = doc.internal.pageSize.getHeight();
+    doc.setFontSize(7);
+    doc.setFont('helvetica', 'normal');
+    doc.setTextColor(150, 150, 150);
     doc.text(
-      `Generado: ${new Date().toLocaleDateString('es-CO')} a las ${new Date().toLocaleTimeString('es-CO')}`,
+      `Generado: ${new Date().toLocaleDateString('es-CO')} ${new Date().toLocaleTimeString('es-CO')}`,
       margin,
-      yPosition
-    );
-    doc.text(
-      `Página ${(doc as any).internal.pages.length}`,
-      pageWidth - margin - 20,
-      yPosition
+      pageHeight - 8
     );
 
-    // Generate PDF buffer
     const pdfBuffer = Buffer.from(doc.output('arraybuffer'));
 
     return new NextResponse(pdfBuffer, {
       headers: {
         'Content-Type': 'application/pdf',
-        'Content-Disposition': `attachment; filename="pedido-${order.id}.pdf"`,
+        'Content-Disposition': `attachment; filename="pedido-${raw.id}.pdf"`,
         'Cache-Control': 'no-cache',
       },
     });
   } catch (error) {
     console.error('Error generating PDF:', error);
-    return NextResponse.json(
-      { error: 'Error al generar PDF' },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: 'Error al generar PDF' }, { status: 500 });
   }
 }
