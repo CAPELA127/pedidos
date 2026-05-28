@@ -17,6 +17,7 @@ interface OrderPayload {
   customer_id?: string;
   items: OrderItem[];
   phone?: string;
+  vendor_name?: string;
   delivery_address?: string;
   notes?: string;
 }
@@ -31,6 +32,7 @@ export async function GET() {
         customer_id,
         status,
         total,
+        vendor_name,
         delivery_address,
         notes,
         created_at,
@@ -57,6 +59,7 @@ export async function GET() {
       neighborhood: o.customers?.neighborhood || '',
       address: o.customers?.address || '',
       customer_id: o.customer_id,
+      vendor_name: o.vendor_name || '',
       delivery_address: o.delivery_address || '',
       notes: o.notes || '',
       items: (o.order_items || []).map((oi: any) => ({
@@ -84,7 +87,7 @@ export async function GET() {
 export async function POST(req: Request) {
   try {
     const payload: OrderPayload = await req.json();
-    const { customer, email, customer_id: providedCustomerId, items, phone, delivery_address, notes } = payload;
+    const { customer, email, customer_id: providedCustomerId, items, phone, vendor_name, delivery_address, notes } = payload;
 
     if (!customer || !items || items.length === 0) {
       return NextResponse.json(
@@ -130,6 +133,7 @@ export async function POST(req: Request) {
         customer_id: customerId,
         status: 'Pendiente',
         total,
+        vendor_name: vendor_name || null,
         delivery_address: delivery_address || null,
         notes: notes || null,
       }]);

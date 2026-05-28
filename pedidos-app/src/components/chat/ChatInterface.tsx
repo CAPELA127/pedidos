@@ -24,6 +24,7 @@ interface Message {
 }
 
 type ConversationState =
+  | 'awaiting_vendor'
   | 'awaiting_search'
   | 'confirming_customer'
   | 'awaiting_tipo_id'
@@ -88,7 +89,8 @@ export default function ChatInterface() {
   const [isProcessing, setIsProcessing] = useState(false);
   const [isSending, setIsSending] = useState(false);
   const [orderItems, setOrderItems] = useState<OrderItem[]>([]);
-  const [conversationState, setConversationState] = useState<ConversationState>('awaiting_search');
+  const [conversationState, setConversationState] = useState<ConversationState>('awaiting_vendor');
+  const [vendorName, setVendorName] = useState('');
   const [customerData, setCustomerData] = useState<CustomerData>({ name: '', email: '' });
   const [selectedImage, setSelectedImage] = useState<{ url: string } | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -113,7 +115,7 @@ export default function ChatInterface() {
     setMessages([{
       id: '1',
       type: 'bot',
-      content: '¡Hola! 👋 Busca tu perfil por NIT/CC o nombre en la barra de arriba, o regístrate como nuevo cliente.',
+      content: '¡Hola! 👋 ¿Cuál es tu nombre? (vendedor)',
       timestamp: new Date()
     }]);
   }, []);
@@ -334,6 +336,19 @@ export default function ChatInterface() {
 
   const handleSend = async () => {
     if (!inputText.trim()) return;
+
+    // ── VENDEDOR ──
+    if (conversationState === 'awaiting_vendor') {
+      const name = inputText.trim();
+      setMessages(prev => [...prev,
+        { id: Date.now().toString(), type: 'user', content: name, timestamp: new Date() },
+        { id: (Date.now() + 1).toString(), type: 'bot', content: `¡Listo, ${name}! 👍 Ahora busca el cliente por NIT/CC o nombre, o regístralo como nuevo.`, timestamp: new Date() }
+      ]);
+      setVendorName(name);
+      setConversationState('awaiting_search');
+      setInputText('');
+      return;
+    }
 
     // ── CONFIRMAR CLIENTE EXISTENTE ──
     if (conversationState === 'confirming_customer') {
@@ -740,6 +755,7 @@ export default function ChatInterface() {
           neighborhood: customerData.neighborhood,
           address: customerData.address,
           customer_id: customerData.id,
+          vendor_name: vendorName || undefined,
           delivery_address: deliveryAddress?.trim() || undefined,
           notes: orderNotes?.trim() || undefined,
           items: orderItems.map(i => ({
@@ -774,6 +790,7 @@ export default function ChatInterface() {
   };
 
   const inputPlaceholder =
+    conversationState === 'awaiting_vendor' ? 'Tu nombre (vendedor)...' :
     conversationState === 'confirming_customer' ? 'sí / no...' :
     conversationState === 'awaiting_tipo_id' ? 'CC, NIT, CE, Pasaporte...' :
     conversationState === 'awaiting_cc_nit' ? 'Número de identificación...' :
@@ -790,7 +807,7 @@ export default function ChatInterface() {
     'Cantidad, número o mensaje...';
 
   const showInput = conversationState !== 'awaiting_search';
-  const showSearchPanel = conversationState !== 'ready';
+  const showSearchPanel = conversationState !== 'ready' && conversationState !== 'awaiting_vendor';
 
   return (
     <div className="flex flex-col w-full bg-[#efeae2] relative overflow-x-hidden" style={{ height: '100dvh' }} onPaste={handlePasteImage}>
@@ -800,7 +817,9 @@ export default function ChatInterface() {
           <div className="w-10 h-10 bg-white/20 rounded-full flex items-center justify-center font-bold text-lg">B</div>
           <div>
             <h1 className="font-semibold leading-tight">Bodega Principal</h1>
-            <p className="text-xs text-white/80">en línea</p>
+            <p className="text-xs text-white/80">
+              {vendorName ? `Vendedor: ${vendorName}` : 'en línea'}
+            </p>
           </div>
         </div>
         <div className="flex items-center gap-4">

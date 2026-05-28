@@ -35,6 +35,7 @@ CREATE TABLE Orders (
     customer_id UUID REFERENCES Customers(id) ON DELETE CASCADE,
     status TEXT NOT NULL DEFAULT 'Pendiente' CHECK (status IN ('Pendiente', 'Empacado', 'Enviado')),
     total NUMERIC NOT NULL DEFAULT 0,
+    vendor_name TEXT,                  -- Nombre del vendedor que tomó el pedido
     delivery_address TEXT,             -- Dirección de entrega diferente a la del cliente (opcional)
     notes TEXT,                        -- Notas adicionales del pedido (instrucciones especiales, etc.)
     created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,

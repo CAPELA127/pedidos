@@ -17,6 +17,7 @@ export async function GET(
         status,
         total,
         created_at,
+        vendor_name,
         delivery_address,
         notes,
         customers (name, email, phone, local_name, city, neighborhood, address),
@@ -122,6 +123,32 @@ export async function GET(
     });
 
     y = (doc as any).lastAutoTable.finalY + 6;
+
+    // ── Vendedor (resaltado verde) ────────────────────────────────────────────
+    if (raw.vendor_name) {
+      autoTable(doc, {
+        startY: y,
+        body: [['VENDEDOR', raw.vendor_name]],
+        theme: 'grid',
+        styles: { fontSize: 8.5, cellPadding: 3.5 },
+        columnStyles: {
+          0: {
+            fontStyle: 'bold',
+            cellWidth: 58,
+            fillColor: [0, 168, 132],    // verde app
+            textColor: [255, 255, 255],
+          },
+          1: {
+            cellWidth: contentWidth - 58,
+            fillColor: [209, 250, 229],  // verde claro
+            textColor: [6, 78, 59],
+            fontStyle: 'bold',
+          },
+        },
+        margin: { left: margin, right: margin },
+      });
+      y = (doc as any).lastAutoTable.finalY + 4;
+    }
 
     // ── Dirección de entrega diferente (resaltado naranja) ─────────────────────
     if (raw.delivery_address) {
