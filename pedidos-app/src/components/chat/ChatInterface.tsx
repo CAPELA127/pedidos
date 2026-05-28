@@ -95,10 +95,16 @@ export default function ChatInterface() {
   const [searchResults, setSearchResults] = useState<CustomerSearchResult[]>([]);
   const [showDropdown, setShowDropdown] = useState(false);
   const [searchLoading, setSearchLoading] = useState(false);
-  const [activeProduct, setActiveProduct] = useState<{ imageUrl: string; ref: string; name: string; price?: number } | null>(null);
+  const [activeProduct, setActiveProduct] = useState<{ imageUrl: string; ref: string; name: string; price?: number; quantity?: number } | null>(null);
+  const [showConfirmModal, setShowConfirmModal] = useState(false);
+  const [modalDeliveryAddress, setModalDeliveryAddress] = useState('');
+  const [modalNotes, setModalNotes] = useState('');
+  const [showCartDrawer, setShowCartDrawer] = useState(false);
+  const [isDraggingOver, setIsDraggingOver] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const searchRef = useRef<HTMLDivElement>(null);
+  const handleImageCaptureRef = useRef<(file: File) => Promise<void>>(async () => {});
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -122,6 +128,27 @@ export default function ChatInterface() {
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
+
+  // Mantiene la referencia a handleImageCapture actualizada (evita stale closures)
+  useEffect(() => {
+    handleImageCaptureRef.current = handleImageCapture;
+  });
+
+  // Ctrl+V / ⌘V — pegar imagen desde portapapeles (WhatsApp Web, capturas, etc.)
+  useEffect(() => {
+    const handlePaste = (e: ClipboardEvent) => {
+      if (conversationState !== 'ready' || isProcessing) return;
+      const items = Array.from(e.clipboardData?.items || []);
+      const imageItem = items.find(item => item.type.startsWith('image/'));
+      if (imageItem) {
+        e.preventDefault();
+        const file = imageItem.getAsFile();
+        if (file) handleImageCaptureRef.current(file);
+      }
+    };
+    document.addEventListener('paste', handlePaste);
+    return () => document.removeEventListener('paste', handlePaste);
+  }, [conversationState, isProcessing]);
 
   const handleSearchInput = (e: React.ChangeEvent<HTMLInputElement>) => {
     const value = e.target.value;
@@ -287,18 +314,21 @@ export default function ChatInterface() {
       setMessages(prev => prev.filter(m => m.id !== loadingMsgId));
 
       if (data.success && data.data?.ref) {
-        const { ref, name, price } = data.data;
+        const { ref, name, price, quantity } = data.data;
         const notInInventory = data.warning;
         const timeLabel = processingTime > 1000 ? `(${(processingTime / 1000).toFixed(1)}s)` : '✨';
 
+        const quantityLabel = quantity ? ` · ${quantity} und` : '';
         setMessages(prev => [...prev, {
           id: Date.now().toString(),
           type: 'bot',
-          content: notInInventory ? `✨ Producto detectado (${ref}) ${timeLabel}\n⚠️ No en inventario - puedes agregarlo igualmente` : `✨ ${name} (${ref}) ${timeLabel}`,
+          content: notInInventory
+            ? `✨ Producto detectado (${ref})${quantityLabel} ${timeLabel}\n⚠️ No en inventario - puedes agregarlo igualmente`
+            : `✨ ${name} (${ref})${quantityLabel} ${timeLabel}`,
           timestamp: new Date()
         }]);
 
-        setActiveProduct({ imageUrl: url, ref, name, price });
+        setActiveProduct({ imageUrl: url, ref, name, price, quantity });
       } else {
         setMessages(prev => [...prev, {
           id: Date.now().toString(),
@@ -607,6 +637,48 @@ export default function ChatInterface() {
     }
   };
 
+  // ── Edición del carrito ─────────────────────────────────────────────────────
+  const updateCartItemQuantity = (itemId: string, newQty: number) => {
+    if (newQty <= 0) {
+      setOrderItems(prev => prev.filter(i => i.itemId !== itemId));
+    } else {
+      setOrderItems(prev => prev.map(i => i.itemId === itemId ? { ...i, quantity: newQty } : i));
+    }
+  };
+
+  const updateCartItemPrice = (itemId: string, newPrice: number) => {
+    setOrderItems(prev => prev.map(i =>
+      i.itemId === itemId ? { ...i, price: newPrice > 0 ? newPrice : undefined } : i
+    ));
+  };
+
+  const removeCartItem = (itemId: string) => {
+    setOrderItems(prev => prev.filter(i => i.itemId !== itemId));
+  };
+
+  // ── Drag & Drop ─────────────────────────────────────────────────────────────
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    if (conversationState === 'ready' && !isProcessing) setIsDraggingOver(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    // Solo quitar el estado si salimos del área completa (no de un hijo)
+    if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+      setIsDraggingOver(false);
+    }
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDraggingOver(false);
+    if (conversationState !== 'ready' || isProcessing) return;
+    const file = e.dataTransfer.files[0];
+    if (file && file.type.startsWith('image/')) {
+      handleImageCaptureRef.current(file);
+    }
+  };
+
   const addToOrder = (ref: string, name: string, quantity: number, price?: number, notes?: string) => {
     setOrderItems(prev => {
       const notesKey = (notes || '').trim().toLowerCase();
@@ -646,9 +718,9 @@ export default function ChatInterface() {
     setActiveProduct(null);
   };
 
-  const handleConfirmOrder = async () => {
-    if (orderItems.length === 0) { alert('Agrega al menos un producto.'); return; }
+  const handleConfirmOrder = async (deliveryAddress?: string, orderNotes?: string) => {
     setIsSending(true);
+    setShowConfirmModal(false);
     try {
       const orderId = `ORD-${Math.floor(1000 + Math.random() * 9000)}`;
       const res = await fetch('/api/orders', {
@@ -665,6 +737,8 @@ export default function ChatInterface() {
           neighborhood: customerData.neighborhood,
           address: customerData.address,
           customer_id: customerData.id,
+          delivery_address: deliveryAddress?.trim() || undefined,
+          notes: orderNotes?.trim() || undefined,
           items: orderItems.map(i => ({
             ref: i.ref,
             name: i.notes ? `${i.name} (${i.notes})` : i.name,
@@ -815,9 +889,22 @@ export default function ChatInterface() {
 
       {/* Chat Area */}
       <div
-        className="flex-1 overflow-y-auto p-3 space-y-3 flex flex-col"
+        className={`flex-1 overflow-y-auto p-3 space-y-3 flex flex-col relative transition-all ${isDraggingOver ? 'ring-4 ring-inset ring-[#00a884]' : ''}`}
         style={{ backgroundImage: 'url("https://user-images.githubusercontent.com/15075759/28719144-86dc0f70-73b1-11e7-911d-60d70fcded21.png")', backgroundRepeat: 'repeat', backgroundSize: '400px' }}
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
       >
+        {/* Overlay drag & drop */}
+        {isDraggingOver && (
+          <div className="absolute inset-0 flex items-center justify-center bg-[#00a884]/15 z-10 pointer-events-none">
+            <div className="bg-white rounded-2xl px-8 py-5 shadow-xl text-center border-2 border-dashed border-[#00a884]">
+              <Upload size={36} className="text-[#00a884] mx-auto mb-2" />
+              <p className="text-sm font-bold text-[#00a884]">Suelta la imagen aquí</p>
+              <p className="text-xs text-gray-400 mt-0.5">JPG, PNG, WEBP</p>
+            </div>
+          </div>
+        )}
         {messages.map((msg) => (
           <div key={msg.id} className={`flex ${msg.type === 'user' ? 'justify-end' : msg.type === 'system' ? 'justify-center' : 'justify-start'}`}>
             {msg.type === 'system' ? (
@@ -867,6 +954,7 @@ export default function ChatInterface() {
               productRef={activeProduct.ref}
               name={activeProduct.name}
               price={activeProduct.price}
+              initialQuantity={activeProduct.quantity}
               onAddToCart={handleProductCardAdd}
               onClose={() => setActiveProduct(null)}
               loading={isProcessing}
@@ -879,7 +967,10 @@ export default function ChatInterface() {
 
       {/* Order Summary Bar */}
       <div className="bg-white border-t border-gray-100 px-3 py-2 flex justify-between items-center shadow-md flex-wrap gap-2">
-        <div className="flex items-center gap-1.5 text-sm text-gray-600">
+        <button
+          onClick={() => orderItems.length > 0 && setShowCartDrawer(true)}
+          className={`flex items-center gap-1.5 text-sm text-gray-600 ${orderItems.length > 0 ? 'active:scale-95 transition-transform cursor-pointer' : 'cursor-default'}`}
+        >
           <ShoppingCart size={16} className="text-[#00a884]" />
           <span className="font-medium text-[#00a884]">{orderItems.length}</span>
           <span>{orderItems.length === 1 ? 'producto' : 'productos'}</span>
@@ -891,9 +982,17 @@ export default function ChatInterface() {
               COP ${orderItems.reduce((total, i) => total + ((i.price || 0) * i.quantity), 0).toLocaleString('es-CO')}
             </span>
           )}
-        </div>
+          {orderItems.length > 0 && (
+            <span className="text-[10px] text-gray-400 ml-1 underline underline-offset-2">editar</span>
+          )}
+        </button>
         <button
-          onClick={handleConfirmOrder}
+          onClick={() => {
+            if (orderItems.length === 0 || conversationState !== 'ready') return;
+            setModalDeliveryAddress('');
+            setModalNotes('');
+            setShowConfirmModal(true);
+          }}
           disabled={isSending || orderItems.length === 0 || conversationState !== 'ready'}
           className={`text-sm px-4 py-1.5 rounded-full font-semibold transition-all shadow-sm ${
             orderItems.length > 0 && conversationState === 'ready'
@@ -910,6 +1009,12 @@ export default function ChatInterface() {
         className="bg-[#f0f2f5] px-3 pt-2 pb-3 flex-shrink-0"
         style={{ paddingBottom: 'max(12px, env(safe-area-inset-bottom))' }}
       >
+        {/* Hint pegar imagen — solo en estado ready */}
+        {conversationState === 'ready' && !isProcessing && (
+          <p className="text-center text-[10px] text-gray-400 mb-1.5 select-none">
+            📋 Ctrl+V para pegar imagen · arrastra y suelta · o usa los botones
+          </p>
+        )}
         <div className="flex items-center gap-2">
           {/* Botones de imagen (solo cuando ready) */}
           {conversationState === 'ready' && (
@@ -988,6 +1093,226 @@ export default function ChatInterface() {
           )}
         </div>
       </div>
+
+      {/* Cart Drawer — editar ítems del pedido */}
+      {showCartDrawer && (
+        <div className="fixed inset-0 bg-black/40 z-40 flex items-end" onClick={() => setShowCartDrawer(false)}>
+          <div
+            className="bg-white w-full rounded-t-2xl flex flex-col shadow-2xl"
+            style={{ maxHeight: '78dvh' }}
+            onClick={e => e.stopPropagation()}
+          >
+            {/* Header */}
+            <div className="flex items-center justify-between px-4 py-3.5 border-b flex-shrink-0">
+              <h3 className="font-bold text-gray-800 flex items-center gap-2">
+                <ShoppingCart size={17} className="text-[#00a884]" />
+                Mi pedido
+                <span className="text-sm font-normal text-gray-500">
+                  · {orderItems.reduce((s, i) => s + i.quantity, 0)} und
+                </span>
+              </h3>
+              <button onClick={() => setShowCartDrawer(false)} className="p-1.5 hover:bg-gray-100 rounded-full">
+                <X size={18} className="text-gray-500" />
+              </button>
+            </div>
+
+            {/* Lista editable */}
+            <div className="overflow-y-auto flex-1 divide-y divide-gray-100">
+              {orderItems.map(item => (
+                <div key={item.itemId} className="px-4 py-3 flex flex-col gap-2">
+                  {/* Nombre + eliminar */}
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="text-sm font-semibold text-gray-800 leading-snug truncate">
+                        {item.name}
+                      </p>
+                      {item.notes && (
+                        <p className="text-xs text-gray-400 truncate">{item.notes}</p>
+                      )}
+                      <p className="text-xs font-mono text-gray-400">REF: {item.ref}</p>
+                    </div>
+                    <button
+                      onClick={() => removeCartItem(item.itemId)}
+                      className="p-1.5 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-full flex-shrink-0 transition-colors"
+                      title="Eliminar"
+                    >
+                      <X size={15} />
+                    </button>
+                  </div>
+
+                  {/* Controles cantidad + precio */}
+                  <div className="flex items-center gap-3">
+                    {/* Cantidad */}
+                    <div className="flex items-center gap-1 bg-gray-100 rounded-full px-1 py-0.5">
+                      <button
+                        onClick={() => updateCartItemQuantity(item.itemId, item.quantity - 1)}
+                        className="w-7 h-7 rounded-full bg-white shadow-sm flex items-center justify-center text-gray-700 font-bold hover:bg-gray-50 active:scale-95 transition-all text-base leading-none"
+                      >−</button>
+                      <span className="text-sm font-bold text-gray-800 min-w-[2rem] text-center tabular-nums">
+                        {item.quantity}
+                      </span>
+                      <button
+                        onClick={() => updateCartItemQuantity(item.itemId, item.quantity + 1)}
+                        className="w-7 h-7 rounded-full bg-[#00a884] shadow-sm flex items-center justify-center text-white font-bold hover:bg-[#008f6f] active:scale-95 transition-all text-base leading-none"
+                      >+</button>
+                    </div>
+
+                    <span className="text-gray-300">×</span>
+
+                    {/* Precio */}
+                    <div className="flex items-center border border-gray-200 rounded-lg overflow-hidden focus-within:ring-2 focus-within:ring-[#00a884]">
+                      <span className="px-2 text-xs text-gray-400 bg-gray-50 border-r border-gray-200 h-full flex items-center py-1.5">$</span>
+                      <input
+                        type="number"
+                        value={item.price ?? ''}
+                        onChange={e => updateCartItemPrice(item.itemId, parseFloat(e.target.value) || 0)}
+                        placeholder="precio"
+                        className="w-24 px-2 py-1.5 text-sm text-gray-800 outline-none bg-white tabular-nums"
+                      />
+                    </div>
+
+                    {/* Subtotal */}
+                    {item.price && (
+                      <span className="text-sm font-semibold text-[#00a884] ml-auto tabular-nums whitespace-nowrap">
+                        ${(item.price * item.quantity).toLocaleString('es-CO')}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              ))}
+
+              {orderItems.length === 0 && (
+                <div className="py-12 text-center text-gray-400">
+                  <ShoppingCart size={32} className="mx-auto mb-2 opacity-30" />
+                  <p className="text-sm">Carrito vacío</p>
+                </div>
+              )}
+            </div>
+
+            {/* Footer */}
+            <div className="border-t px-4 py-3 bg-gray-50 flex-shrink-0">
+              {orderItems.some(i => i.price) && (
+                <div className="flex justify-between items-center mb-3">
+                  <span className="text-sm text-gray-600">Total del pedido</span>
+                  <span className="font-bold text-[#00a884]">
+                    COP ${orderItems.reduce((t, i) => t + ((i.price || 0) * i.quantity), 0).toLocaleString('es-CO')}
+                  </span>
+                </div>
+              )}
+              <button
+                onClick={() => {
+                  setShowCartDrawer(false);
+                  setModalDeliveryAddress('');
+                  setModalNotes('');
+                  setShowConfirmModal(true);
+                }}
+                disabled={orderItems.length === 0}
+                className="w-full py-3 bg-[#00a884] text-white rounded-xl font-semibold text-sm hover:bg-[#008f6f] active:scale-[0.98] transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Confirmar pedido →
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Confirmar Pedido */}
+      {showConfirmModal && (
+        <div className="fixed inset-0 bg-black/50 flex items-end sm:items-center justify-center z-50 p-0 sm:p-4">
+          <div className="bg-white rounded-t-2xl sm:rounded-2xl shadow-xl w-full sm:max-w-lg flex flex-col max-h-[92dvh]">
+
+            {/* Header */}
+            <div className="flex items-center justify-between px-5 pt-5 pb-4 border-b flex-shrink-0">
+              <div>
+                <h2 className="text-base font-bold text-gray-800">Confirmar Pedido</h2>
+                <p className="text-xs text-gray-400 mt-0.5">{customerData.name}</p>
+              </div>
+              <button onClick={() => setShowConfirmModal(false)} className="p-1.5 hover:bg-gray-100 rounded-full transition-colors">
+                <X size={20} className="text-gray-500" />
+              </button>
+            </div>
+
+            {/* Resumen de items */}
+            <div className="px-5 py-3 overflow-y-auto flex-shrink-0 max-h-44 border-b bg-gray-50">
+              <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Resumen del pedido</p>
+              <div className="space-y-1.5">
+                {orderItems.map(item => (
+                  <div key={item.itemId} className="flex justify-between items-center text-sm gap-2">
+                    <span className="text-gray-700 truncate">
+                      {item.notes ? `${item.name} (${item.notes})` : item.name}
+                      <span className="text-gray-400 ml-1">×{item.quantity}</span>
+                    </span>
+                    {item.price
+                      ? <span className="text-gray-500 flex-shrink-0 font-medium">${(item.price * item.quantity).toLocaleString('es-CO')}</span>
+                      : <span className="text-gray-400 flex-shrink-0 text-xs">sin precio</span>
+                    }
+                  </div>
+                ))}
+              </div>
+              {orderItems.some(i => i.price) && (
+                <div className="flex justify-between font-bold text-sm border-t border-gray-200 pt-2 mt-2">
+                  <span className="text-gray-700">Total</span>
+                  <span className="text-[#00a884]">
+                    COP ${orderItems.reduce((t, i) => t + ((i.price || 0) * i.quantity), 0).toLocaleString('es-CO')}
+                  </span>
+                </div>
+              )}
+            </div>
+
+            {/* Campos adicionales */}
+            <div className="px-5 py-4 space-y-4 overflow-y-auto">
+              {/* Dirección diferente */}
+              <div>
+                <label className="text-xs font-semibold text-orange-600 block mb-1.5 flex items-center gap-1.5">
+                  <span className="w-4 h-4 bg-orange-500 rounded-full inline-flex items-center justify-center text-white text-[9px] font-bold flex-shrink-0">📍</span>
+                  Dirección de entrega diferente
+                  <span className="text-gray-400 font-normal">(opcional)</span>
+                </label>
+                <input
+                  type="text"
+                  value={modalDeliveryAddress}
+                  onChange={e => setModalDeliveryAddress(e.target.value)}
+                  placeholder={customerData.address ? `Por defecto: ${customerData.address}` : 'Ej: Cra 45 #95-23, Medellín'}
+                  className="w-full px-3 py-2.5 border border-orange-200 bg-orange-50 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-orange-400 focus:border-transparent placeholder:text-gray-400"
+                />
+              </div>
+
+              {/* Notas adicionales */}
+              <div>
+                <label className="text-xs font-semibold text-yellow-700 block mb-1.5 flex items-center gap-1.5">
+                  <span className="w-4 h-4 bg-yellow-400 rounded-full inline-flex items-center justify-center text-white text-[9px] font-bold flex-shrink-0">📝</span>
+                  Notas adicionales del pedido
+                  <span className="text-gray-400 font-normal">(opcional)</span>
+                </label>
+                <textarea
+                  value={modalNotes}
+                  onChange={e => setModalNotes(e.target.value)}
+                  placeholder="Instrucciones especiales, aclaraciones, variantes..."
+                  rows={3}
+                  className="w-full px-3 py-2.5 border border-yellow-200 bg-yellow-50 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400 focus:border-transparent resize-none placeholder:text-gray-400"
+                />
+              </div>
+            </div>
+
+            {/* Acciones */}
+            <div className="px-5 py-4 border-t bg-gray-50 rounded-b-2xl flex gap-3 flex-shrink-0">
+              <button
+                onClick={() => setShowConfirmModal(false)}
+                className="flex-1 py-2.5 border border-gray-300 rounded-xl text-sm font-medium text-gray-700 hover:bg-gray-100 active:scale-95 transition-all"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={() => handleConfirmOrder(modalDeliveryAddress, modalNotes)}
+                disabled={isSending}
+                className="flex-1 py-2.5 bg-[#00a884] text-white rounded-xl text-sm font-semibold hover:bg-[#008f6f] active:scale-95 transition-all disabled:opacity-60 disabled:cursor-not-allowed"
+              >
+                {isSending ? 'Enviando...' : '✓ Confirmar Pedido'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Modal Ver Imagen */}
       {selectedImage && (

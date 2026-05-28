@@ -21,10 +21,10 @@ export async function POST(req: Request) {
     const base64 = Buffer.from(arrayBuffer).toString('base64');
     const mediaType = (image.type || 'image/jpeg') as 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif';
 
-    // Claude Vision extrae la referencia del producto
+    // Claude Vision extrae referencia, cantidad y precio de la imagen
     const response = await anthropic.messages.create({
       model: 'claude-haiku-4-5',
-      max_tokens: 100,
+      max_tokens: 150,
       messages: [{
         role: 'user',
         content: [
@@ -34,20 +34,42 @@ export async function POST(req: Request) {
           },
           {
             type: 'text',
-            text: `Extrae SOLO el código o referencia del producto en esta imagen.
-El formato suele ser: números con guión (ej: 4162-9, 25872-2) o letras+números (ej: PC-35).
-Responde ÚNICAMENTE con el código, sin texto adicional.
-Si hay varios, el más prominente o el que parece ser la referencia principal.
-Si no encuentras ningún código, responde: NINGUNO`
+            text: `Analiza esta imagen de producto y extrae los siguientes datos.
+
+Responde ÚNICAMENTE con JSON válido, sin texto adicional:
+{"ref": "...", "quantity": null, "price": null}
+
+Reglas:
+- ref: código o referencia del producto (ej: 4162-9, PC-35, 25872-2). Si no encuentras, pon "NINGUNO".
+- quantity: número de unidades indicadas en la imagen (número escrito a mano, etiqueta "cant:", "x24", etc). Si no hay, pon null.
+- price: precio si aparece explícitamente en la imagen (solo número). Si no hay, pon null.`
           }
         ]
       }]
     });
 
-    const rawRef = (response.content[0] as { type: string; text: string }).text.trim().toUpperCase();
+    const rawText = (response.content[0] as { type: string; text: string }).text.trim();
     const processingTime = Date.now() - startTime;
 
-    console.log('Claude OCR resultado:', rawRef, `(${processingTime}ms)`);
+    let rawRef = 'NINGUNO';
+    let detectedQuantity: number | undefined;
+    let detectedPrice: number | undefined;
+
+    try {
+      const parsed = JSON.parse(rawText);
+      rawRef = (parsed.ref || 'NINGUNO').toString().trim().toUpperCase();
+      if (parsed.quantity != null && !isNaN(parseInt(parsed.quantity))) {
+        detectedQuantity = parseInt(parsed.quantity);
+      }
+      if (parsed.price != null && !isNaN(parseFloat(parsed.price))) {
+        detectedPrice = parseFloat(parsed.price);
+      }
+    } catch {
+      // fallback: si Claude no devolvió JSON, tratar como referencia plana
+      rawRef = rawText.toUpperCase().replace(/[^A-Z0-9\-]/g, '').trim() || 'NINGUNO';
+    }
+
+    console.log('Claude OCR resultado:', { rawRef, detectedQuantity, detectedPrice }, `(${processingTime}ms)`);
 
     if (!rawRef || rawRef === 'NINGUNO') {
       return NextResponse.json({
@@ -68,9 +90,15 @@ Si no encuentras ningún código, responde: NINGUNO`
 
     if (exact && exact.length > 0) {
       const row = exact[0] as any;
+      const inventoryPrice = row['P. Venta'] ? parseFloat(row['P. Venta']) : undefined;
       return NextResponse.json({
         success: true,
-        data: { ref: row.Referencia, name: row.Producto, price: row['P. Venta'] ? parseFloat(row['P. Venta']) : undefined },
+        data: {
+          ref: row.Referencia,
+          name: row.Producto,
+          price: inventoryPrice ?? detectedPrice,
+          quantity: detectedQuantity
+        },
         processingTime
       });
     }
@@ -84,9 +112,15 @@ Si no encuentras ningún código, responde: NINGUNO`
 
     if (fuzzy && fuzzy.length > 0) {
       const row = fuzzy[0] as any;
+      const inventoryPrice = row['P. Venta'] ? parseFloat(row['P. Venta']) : undefined;
       return NextResponse.json({
         success: true,
-        data: { ref: row.Referencia, name: row.Producto, price: row['P. Venta'] ? parseFloat(row['P. Venta']) : undefined },
+        data: {
+          ref: row.Referencia,
+          name: row.Producto,
+          price: inventoryPrice ?? detectedPrice,
+          quantity: detectedQuantity
+        },
         processingTime
       });
     }
@@ -94,7 +128,7 @@ Si no encuentras ningún código, responde: NINGUNO`
     // No está en inventario pero se detectó la referencia
     return NextResponse.json({
       success: true,
-      data: { ref: rawRef, name: 'Producto Desconocido' },
+      data: { ref: rawRef, name: 'Producto Desconocido', price: detectedPrice, quantity: detectedQuantity },
       warning: 'Referencia no encontrada en inventario',
       processingTime
     });

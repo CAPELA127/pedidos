@@ -35,9 +35,15 @@ CREATE TABLE Orders (
     customer_id UUID REFERENCES Customers(id) ON DELETE CASCADE,
     status TEXT NOT NULL DEFAULT 'Pendiente' CHECK (status IN ('Pendiente', 'Empacado', 'Enviado')),
     total NUMERIC NOT NULL DEFAULT 0,
+    delivery_address TEXT,             -- Dirección de entrega diferente a la del cliente (opcional)
+    notes TEXT,                        -- Notas adicionales del pedido (instrucciones especiales, etc.)
     created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL
 );
+
+-- MIGRACIÓN (ejecutar en Supabase SQL editor si la tabla ya existe):
+-- ALTER TABLE orders ADD COLUMN IF NOT EXISTS delivery_address TEXT;
+-- ALTER TABLE orders ADD COLUMN IF NOT EXISTS notes TEXT;
 
 -- 4. Tabla OrderItems
 CREATE TABLE OrderItems (

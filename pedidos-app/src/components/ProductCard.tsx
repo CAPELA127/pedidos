@@ -8,6 +8,7 @@ interface ProductCardProps {
   productRef: string;
   name: string;
   price?: number;
+  initialQuantity?: number;
   onAddToCart: (quantity: number, price: number, name: string, notes?: string) => void;
   onClose?: () => void;
   loading?: boolean;
@@ -18,11 +19,12 @@ export default function ProductCard({
   productRef,
   name,
   price,
+  initialQuantity,
   onAddToCart,
   onClose,
   loading = false
 }: ProductCardProps) {
-  const [quantity, setQuantity] = useState('1');
+  const [quantity, setQuantity] = useState(initialQuantity ? String(initialQuantity) : '1');
   const [editPrice, setEditPrice] = useState(price ? String(price) : '');
   const [editName, setEditName] = useState(name === 'Producto Desconocido' ? '' : name);
   const [notes, setNotes] = useState('');
@@ -110,14 +112,23 @@ export default function ProductCard({
             </div>
           </div>
           <div>
-            <label className="text-xs text-gray-500 font-medium block mb-0.5">Cantidad</label>
+            <label className="text-xs text-gray-500 font-medium block mb-0.5">
+              Cantidad
+              {initialQuantity && (
+                <span className="ml-1 text-[10px] bg-[#e8f8f4] text-[#00a884] px-1.5 py-0.5 rounded-full font-semibold">
+                  📷 auto
+                </span>
+              )}
+            </label>
             <input
               type="number"
               value={quantity}
               onChange={e => setQuantity(e.target.value)}
               min="1"
               placeholder="1"
-              className="w-full px-3 py-1.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#00a884]"
+              className={`w-full px-3 py-1.5 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#00a884] ${
+                initialQuantity ? 'border-[#00a884] bg-[#f0fdf8]' : 'border-gray-300'
+              }`}
               disabled={loading || isSubmitting}
             />
           </div>

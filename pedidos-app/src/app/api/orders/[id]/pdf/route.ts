@@ -17,6 +17,8 @@ export async function GET(
         status,
         total,
         created_at,
+        delivery_address,
+        notes,
         customers (name, email, phone, local_name, city, neighborhood, address),
         order_items (product_ref, product_name, quantity, price_at_time)
       `)
@@ -119,7 +121,61 @@ export async function GET(
       margin: { left: margin, right: margin },
     });
 
-    y = (doc as any).lastAutoTable.finalY + 8;
+    y = (doc as any).lastAutoTable.finalY + 6;
+
+    // ── Dirección de entrega diferente (resaltado naranja) ─────────────────────
+    if (raw.delivery_address) {
+      autoTable(doc, {
+        startY: y,
+        body: [['ENTREGA EN DIRECCIÓN DIFERENTE', raw.delivery_address]],
+        theme: 'grid',
+        styles: { fontSize: 8.5, cellPadding: 3.5, overflow: 'linebreak' },
+        columnStyles: {
+          0: {
+            fontStyle: 'bold',
+            cellWidth: 58,
+            fillColor: [251, 146, 60],   // naranja
+            textColor: [255, 255, 255],
+          },
+          1: {
+            cellWidth: contentWidth - 58,
+            fillColor: [255, 237, 213],  // naranja claro
+            textColor: [124, 45, 18],
+            fontStyle: 'bold',
+          },
+        },
+        margin: { left: margin, right: margin },
+      });
+      y = (doc as any).lastAutoTable.finalY + 4;
+    }
+
+    // ── Notas adicionales (resaltado amarillo) ─────────────────────────────────
+    if (raw.notes) {
+      autoTable(doc, {
+        startY: y,
+        body: [['NOTAS DEL PEDIDO', raw.notes]],
+        theme: 'grid',
+        styles: { fontSize: 8.5, cellPadding: 3.5, overflow: 'linebreak' },
+        columnStyles: {
+          0: {
+            fontStyle: 'bold',
+            cellWidth: 58,
+            fillColor: [234, 179, 8],    // amarillo oscuro
+            textColor: [255, 255, 255],
+          },
+          1: {
+            cellWidth: contentWidth - 58,
+            fillColor: [254, 252, 232],  // amarillo claro
+            textColor: [92, 68, 0],
+            fontStyle: 'bold',
+          },
+        },
+        margin: { left: margin, right: margin },
+      });
+      y = (doc as any).lastAutoTable.finalY + 4;
+    }
+
+    y += 4;
 
     // ── Tabla de productos ─────────────────────────────────────────────────────
     doc.setFontSize(9);

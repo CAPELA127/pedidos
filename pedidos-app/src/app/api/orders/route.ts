@@ -17,6 +17,8 @@ interface OrderPayload {
   customer_id?: string;
   items: OrderItem[];
   phone?: string;
+  delivery_address?: string;
+  notes?: string;
 }
 
 export async function GET() {
@@ -29,6 +31,8 @@ export async function GET() {
         customer_id,
         status,
         total,
+        delivery_address,
+        notes,
         created_at,
         customers (id, name, email, phone, local_name, city, neighborhood, address),
         order_items (
@@ -53,6 +57,8 @@ export async function GET() {
       neighborhood: o.customers?.neighborhood || '',
       address: o.customers?.address || '',
       customer_id: o.customer_id,
+      delivery_address: o.delivery_address || '',
+      notes: o.notes || '',
       items: (o.order_items || []).map((oi: any) => ({
         ref: oi.product_ref,
         name: oi.product_name || oi.product_ref,
@@ -78,11 +84,11 @@ export async function GET() {
 export async function POST(req: Request) {
   try {
     const payload: OrderPayload = await req.json();
-    const { customer, email, customer_id: providedCustomerId, items, phone } = payload;
+    const { customer, email, customer_id: providedCustomerId, items, phone, delivery_address, notes } = payload;
 
-    if (!customer || !email || !items || items.length === 0) {
+    if (!customer || !items || items.length === 0) {
       return NextResponse.json(
-        { success: false, message: 'Faltan campos: customer, email, items' },
+        { success: false, message: 'Faltan campos: customer, items' },
         { status: 400 }
       );
     }
@@ -90,18 +96,22 @@ export async function POST(req: Request) {
     // Buscar o crear cliente
     let customerId = providedCustomerId;
     if (!customerId) {
-      const { data: existing } = await getSupabase()
-        .from('customers')
-        .select('id')
-        .eq('email', email)
-        .single();
+      let existing = null;
+      if (email) {
+        const { data } = await getSupabase()
+          .from('customers')
+          .select('id')
+          .eq('email', email)
+          .single();
+        existing = data;
+      }
 
       if (existing) {
         customerId = existing.id;
       } else {
         const { data: created, error: createErr } = await getSupabase()
           .from('customers')
-          .insert([{ name: customer, email, phone: phone || null }])
+          .insert([{ name: customer, email: email || null, phone: phone || null }])
           .select('id')
           .single();
         if (createErr) throw createErr;
@@ -115,7 +125,14 @@ export async function POST(req: Request) {
     // Crear orden
     const { error: orderErr } = await getSupabase()
       .from('orders')
-      .insert([{ id: orderId, customer_id: customerId, status: 'Pendiente', total }]);
+      .insert([{
+        id: orderId,
+        customer_id: customerId,
+        status: 'Pendiente',
+        total,
+        delivery_address: delivery_address || null,
+        notes: notes || null,
+      }]);
     if (orderErr) throw orderErr;
 
     // Crear items — guardamos product_name para no depender de JOIN
