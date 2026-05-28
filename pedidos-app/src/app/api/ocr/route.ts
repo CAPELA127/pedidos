@@ -55,20 +55,35 @@ Reglas:
     let detectedQuantity: number | undefined;
     let detectedPrice: number | undefined;
 
+    // Claude a veces envuelve el JSON en ```json ... ``` o agrega texto extra.
+    // Extraer el primer objeto JSON que aparezca en la respuesta.
+    let jsonText = rawText
+      .replace(/^```json\s*/im, '')   // quitar ```json al inicio
+      .replace(/^```\s*/im, '')       // quitar ``` al inicio
+      .replace(/```\s*$/m, '')        // quitar ``` al final
+      .trim();
+
+    // Buscar el bloque JSON con regex como último recurso
+    const jsonMatch = jsonText.match(/\{[\s\S]*?\}/);
+    if (jsonMatch) jsonText = jsonMatch[0];
+
     try {
-      const parsed = JSON.parse(rawText);
+      const parsed = JSON.parse(jsonText);
       rawRef = (parsed.ref || 'NINGUNO').toString().trim().toUpperCase();
-      if (parsed.quantity != null && !isNaN(parseInt(parsed.quantity))) {
-        detectedQuantity = parseInt(parsed.quantity);
+      if (parsed.quantity != null && !isNaN(parseInt(String(parsed.quantity)))) {
+        detectedQuantity = parseInt(String(parsed.quantity));
       }
-      if (parsed.price != null && !isNaN(parseFloat(parsed.price))) {
-        detectedPrice = parseFloat(parsed.price);
+      if (parsed.price != null && !isNaN(parseFloat(String(parsed.price)))) {
+        detectedPrice = parseFloat(String(parsed.price));
       }
     } catch {
-      // fallback: si Claude no devolvió JSON, tratar como referencia plana
-      rawRef = rawText.toUpperCase().replace(/[^A-Z0-9\-]/g, '').trim() || 'NINGUNO';
+      // Fallback real: Claude no devolvió JSON. Intentar extraer la referencia directamente
+      // buscando patrones como PTZ-4671, 4162-9, PC-35, etc.
+      const refMatch = rawText.match(/\b([A-Z]{1,4}-\d{2,}|\d{4,}-\d+)\b/i);
+      rawRef = refMatch ? refMatch[1].toUpperCase() : 'NINGUNO';
     }
 
+    console.log('Claude OCR raw:', rawText.slice(0, 120));
     console.log('Claude OCR resultado:', { rawRef, detectedQuantity, detectedPrice }, `(${processingTime}ms)`);
 
     if (!rawRef || rawRef === 'NINGUNO') {
