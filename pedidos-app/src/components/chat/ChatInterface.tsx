@@ -104,7 +104,6 @@ export default function ChatInterface() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const searchRef = useRef<HTMLDivElement>(null);
-  const handleImageCaptureRef = useRef<(file: File) => Promise<void>>(async () => {});
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -128,27 +127,6 @@ export default function ChatInterface() {
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
-
-  // Mantiene la referencia a handleImageCapture actualizada (evita stale closures)
-  useEffect(() => {
-    handleImageCaptureRef.current = handleImageCapture;
-  });
-
-  // Ctrl+V / ⌘V — pegar imagen desde portapapeles (WhatsApp Web, capturas, etc.)
-  useEffect(() => {
-    const handlePaste = (e: ClipboardEvent) => {
-      if (conversationState !== 'ready' || isProcessing) return;
-      const items = Array.from(e.clipboardData?.items || []);
-      const imageItem = items.find(item => item.type.startsWith('image/'));
-      if (imageItem) {
-        e.preventDefault();
-        const file = imageItem.getAsFile();
-        if (file) handleImageCaptureRef.current(file);
-      }
-    };
-    document.addEventListener('paste', handlePaste);
-    return () => document.removeEventListener('paste', handlePaste);
-  }, [conversationState, isProcessing]);
 
   const handleSearchInput = (e: React.ChangeEvent<HTMLInputElement>) => {
     const value = e.target.value;
@@ -637,6 +615,31 @@ export default function ChatInterface() {
     }
   };
 
+  // ── Pegar imagen (Ctrl+V / ⌘V) ─────────────────────────────────────────────
+  const handlePasteImage = (e: React.ClipboardEvent) => {
+    if (conversationState !== 'ready' || isProcessing) return;
+    const items = Array.from(e.clipboardData?.items ?? []);
+    // Buscar imagen en items (formato directo: image/png, image/jpeg, etc.)
+    const imageItem = items.find(item => item.type.startsWith('image/'));
+    if (imageItem) {
+      const file = imageItem.getAsFile();
+      if (file) {
+        e.preventDefault();
+        e.stopPropagation();
+        handleImageCapture(file);
+        return;
+      }
+    }
+    // Fallback: archivos en el portapapeles
+    const files = Array.from(e.clipboardData?.files ?? []);
+    const imageFile = files.find(f => f.type.startsWith('image/'));
+    if (imageFile) {
+      e.preventDefault();
+      e.stopPropagation();
+      handleImageCapture(imageFile);
+    }
+  };
+
   // ── Edición del carrito ─────────────────────────────────────────────────────
   const updateCartItemQuantity = (itemId: string, newQty: number) => {
     if (newQty <= 0) {
@@ -675,7 +678,7 @@ export default function ChatInterface() {
     if (conversationState !== 'ready' || isProcessing) return;
     const file = e.dataTransfer.files[0];
     if (file && file.type.startsWith('image/')) {
-      handleImageCaptureRef.current(file);
+      handleImageCapture(file);
     }
   };
 
@@ -790,7 +793,7 @@ export default function ChatInterface() {
   const showSearchPanel = conversationState !== 'ready';
 
   return (
-    <div className="flex flex-col w-full bg-[#efeae2] relative overflow-x-hidden" style={{ height: '100dvh' }}>
+    <div className="flex flex-col w-full bg-[#efeae2] relative overflow-x-hidden" style={{ height: '100dvh' }} onPaste={handlePasteImage}>
       {/* Header */}
       <header className="bg-[#00a884] text-white p-3 flex items-center justify-between z-10 shadow-md">
         <div className="flex items-center gap-3">
@@ -1072,6 +1075,7 @@ export default function ChatInterface() {
                 value={inputText}
                 onChange={e => setInputText(e.target.value)}
                 onKeyDown={e => e.key === 'Enter' && handleSend()}
+                onPaste={handlePasteImage}
                 disabled={isProcessing}
               />
             </div>
