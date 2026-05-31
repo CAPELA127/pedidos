@@ -3,6 +3,10 @@ import Anthropic from '@anthropic-ai/sdk';
 import { getSupabase } from '@/lib/supabase-server';
 
 export const dynamic = 'force-dynamic';
+export const maxDuration = 45;
+
+// IMPORTANTE: usar siempre el model ID con sufijo de fecha — sin sufijo la API falla silenciosamente.
+const OCR_MODEL = 'claude-haiku-4-5-20251001';
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -23,7 +27,7 @@ export async function POST(req: Request) {
 
     // Claude Vision extrae referencia, cantidad y precio de la imagen
     const response = await anthropic.messages.create({
-      model: 'claude-haiku-4-5',
+      model: OCR_MODEL,
       max_tokens: 150,
       messages: [{
         role: 'user',
@@ -149,9 +153,11 @@ Reglas:
     });
 
   } catch (error) {
-    console.error('OCR API Error:', error);
+    const msg = error instanceof Error ? error.message : String(error);
+    console.error('OCR API Error:', msg);
+    // Incluir el mensaje real para facilitar diagnóstico en Vercel logs
     return NextResponse.json(
-      { success: false, error: 'Error procesando imagen' },
+      { success: false, error: 'Error procesando imagen', _debug: msg },
       { status: 500 }
     );
   }

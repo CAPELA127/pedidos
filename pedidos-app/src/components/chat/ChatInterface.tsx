@@ -310,10 +310,14 @@ export default function ChatInterface() {
 
         setActiveProduct({ imageUrl: url, ref, name, price, quantity });
       } else {
+        // Si el servidor devolvió un error de API (no de imagen), mostrar mensaje distinto
+        const isApiError = !res.ok || (data.error && !data.error.includes('referencia'));
         setMessages(prev => [...prev, {
           id: Date.now().toString(),
           type: 'bot',
-          content: '❌ Imagen poco clara. Asegúrate de que:\n• El código esté visible\n• Buena iluminación\n• Foto enfocada\n\nIntenta de nuevo.',
+          content: isApiError
+            ? '❌ Error al procesar la imagen. Por favor intenta de nuevo.'
+            : '❌ Imagen poco clara. Asegúrate de que:\n• El código esté visible\n• Buena iluminación\n• Foto enfocada\n\nIntenta de nuevo.',
           timestamp: new Date()
         }]);
       }
