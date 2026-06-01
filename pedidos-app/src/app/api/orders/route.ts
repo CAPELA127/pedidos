@@ -133,10 +133,7 @@ export async function POST(req: Request) {
       status: 'Pendiente',
       total,
       delivery_address: delivery_address || null,
-      // Si vendor_name está en notes como fallback hasta que se agregue la columna
-      notes: vendor_name
-        ? `[Vendedor: ${vendor_name}]${notes ? ' ' + notes : ''}`
-        : (notes || null),
+      notes: notes || null,
     };
 
     // Intentar con vendor_name primero; si falla por columna inexistente, reintenta sin ella
