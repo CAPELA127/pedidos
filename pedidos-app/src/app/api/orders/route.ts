@@ -126,17 +126,26 @@ export async function POST(req: Request) {
     const total = items.reduce((sum, item) => sum + (item.price || 0) * item.quantity, 0);
 
     // Crear orden
-    const { error: orderErr } = await getSupabase()
-      .from('orders')
-      .insert([{
-        id: orderId,
-        customer_id: customerId,
-        status: 'Pendiente',
-        total,
-        vendor_name: vendor_name || null,
-        delivery_address: delivery_address || null,
-        notes: notes || null,
-      }]);
+    // vendor_name se incluye sólo si la columna existe en la tabla
+    const orderRow: Record<string, unknown> = {
+      id: orderId,
+      customer_id: customerId,
+      status: 'Pendiente',
+      total,
+      delivery_address: delivery_address || null,
+      // Si vendor_name está en notes como fallback hasta que se agregue la columna
+      notes: vendor_name
+        ? `[Vendedor: ${vendor_name}]${notes ? ' ' + notes : ''}`
+        : (notes || null),
+    };
+
+    // Intentar con vendor_name primero; si falla por columna inexistente, reintenta sin ella
+    let { error: orderErr } = await getSupabase().from('orders').insert([{ ...orderRow, vendor_name: vendor_name || null }]);
+    if (orderErr?.message?.includes('vendor_name') || orderErr?.code === '42703') {
+      console.warn('Columna vendor_name no existe, reintentando sin ella. Corre: ALTER TABLE orders ADD COLUMN IF NOT EXISTS vendor_name TEXT');
+      const retry = await getSupabase().from('orders').insert([orderRow]);
+      orderErr = retry.error;
+    }
     if (orderErr) throw orderErr;
 
     // Crear items — guardamos product_name para no depender de JOIN
