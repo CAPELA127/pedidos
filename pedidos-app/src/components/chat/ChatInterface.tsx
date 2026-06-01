@@ -774,8 +774,8 @@ export default function ChatInterface() {
         })
       });
 
-      if (res.ok) {
-        const data = await res.json();
+      const data = await res.json();
+      if (res.ok && data.success) {
         setMessages(prev => [...prev, {
           id: Date.now().toString(),
           type: 'bot',
@@ -784,10 +784,19 @@ export default function ChatInterface() {
         }]);
         setOrderItems([]);
       } else {
-        throw new Error('Error en el servidor');
+        const errMsg = data?.message || data?.error || `HTTP ${res.status}`;
+        console.error('Error confirmando pedido:', errMsg, data);
+        setMessages(prev => [...prev, {
+          id: Date.now().toString(),
+          type: 'bot',
+          content: `❌ Error al confirmar: ${errMsg}`,
+          timestamp: new Date()
+        }]);
       }
-    } catch {
-      setMessages(prev => [...prev, { id: Date.now().toString(), type: 'bot', content: '❌ Error al confirmar. Intenta nuevamente.', timestamp: new Date() }]);
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : 'Error desconocido';
+      console.error('handleConfirmOrder catch:', errMsg);
+      setMessages(prev => [...prev, { id: Date.now().toString(), type: 'bot', content: `❌ Error al confirmar: ${errMsg}`, timestamp: new Date() }]);
     } finally {
       setIsSending(false);
     }
