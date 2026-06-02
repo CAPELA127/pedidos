@@ -541,8 +541,27 @@ export default function Dashboard() {
                 </div>
               )}
 
-              {/* ── Formulario agregar producto ── */}
-              <div ref={addProductRef} className="border-2 border-dashed border-[#00a884]/40 rounded-xl p-4 bg-[#f0fdf8] mt-2">
+            </div>
+
+            {/* Total */}
+            {editingItems.length > 0 && (
+              <div className="border-t bg-gray-50 px-4 sm:px-6 py-4">
+                <div className="flex justify-between items-center mb-2">
+                  <span className="text-sm text-gray-600">Total unidades:</span>
+                  <span className="font-bold text-gray-800">{editingItems.reduce((s, i) => s + i.quantity, 0)}</span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="font-bold text-gray-800">Total pedido:</span>
+                  <span className="text-xl font-bold text-[#00a884]">
+                    ${editingItems.reduce((s, i) => s + (i.price || 0) * i.quantity, 0).toLocaleString('es-CO')}
+                  </span>
+                </div>
+              </div>
+            )}
+
+            {/* ── Formulario agregar producto (siempre visible al editar) ── */}
+            {isEditing && (
+              <div ref={addProductRef} className="border-t border-[#00a884]/20 bg-[#f0fdf8] px-4 sm:px-6 py-4">
                 <p className="text-xs font-bold text-[#00a884] mb-3 flex items-center gap-1.5">
                   <Plus size={13} /> Agregar producto al pedido
                 </p>
@@ -556,10 +575,11 @@ export default function Dashboard() {
                     onChange={e => handleRefInput(e.target.value)}
                     onFocus={() => suggestions.length > 0 && setShowSuggestions(true)}
                     placeholder="Ej: 4162-9, MASC-001..."
-                    className="w-full px-3 py-2 border-2 border-gray-200 rounded-lg text-sm font-mono font-semibold focus:outline-none focus:border-[#00a884] bg-white uppercase"
+                    className="w-full px-3 py-2 border-2 border-gray-200 rounded-lg text-sm font-mono font-semibold focus:outline-none focus:border-[#00a884] bg-white"
+                    style={{ textTransform: 'uppercase' }}
                   />
                   {showSuggestions && (
-                    <div className="absolute top-full left-0 right-0 mt-1 bg-white rounded-xl shadow-lg border border-gray-100 z-30 max-h-48 overflow-y-auto">
+                    <div className="absolute bottom-full left-0 right-0 mb-1 bg-white rounded-xl shadow-lg border border-gray-100 z-30 max-h-44 overflow-y-auto">
                       {suggestionsLoading ? (
                         <div className="p-3 text-center text-xs text-gray-400">Buscando...</div>
                       ) : suggestions.length > 0 ? (
@@ -584,27 +604,25 @@ export default function Dashboard() {
                         ))
                       ) : (
                         <div className="p-3 text-center text-xs text-gray-400">
-                          Sin resultados — puedes ingresar la ref manualmente
+                          Sin resultados — puedes escribir la ref manualmente
                         </div>
                       )}
                     </div>
                   )}
                 </div>
 
-                {/* Nombre (se llena solo, editable) */}
-                <div className="mb-2">
-                  <label className="text-xs text-gray-500 font-medium block mb-1">Nombre del producto</label>
-                  <input
-                    type="text"
-                    value={newName}
-                    onChange={e => setNewName(e.target.value)}
-                    placeholder="Se completa automáticamente..."
-                    className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:border-[#00a884] bg-white"
-                  />
-                </div>
-
-                {/* Cantidad + Precio en fila */}
-                <div className="grid grid-cols-2 gap-2 mb-3">
+                {/* Nombre + Cantidad + Precio en fila */}
+                <div className="grid grid-cols-3 gap-2 mb-2">
+                  <div className="col-span-3 sm:col-span-1">
+                    <label className="text-xs text-gray-500 font-medium block mb-1">Nombre</label>
+                    <input
+                      type="text"
+                      value={newName}
+                      onChange={e => setNewName(e.target.value)}
+                      placeholder="Autocompleta al seleccionar..."
+                      className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:border-[#00a884] bg-white"
+                    />
+                  </div>
                   <div>
                     <label className="text-xs text-gray-500 font-medium block mb-1">Cantidad</label>
                     <input
@@ -615,7 +633,7 @@ export default function Dashboard() {
                     />
                   </div>
                   <div>
-                    <label className="text-xs text-gray-500 font-medium block mb-1">Precio unit. (COP)</label>
+                    <label className="text-xs text-gray-500 font-medium block mb-1">Precio (COP)</label>
                     <div className="flex items-center border border-gray-200 rounded-lg focus-within:border-[#00a884] bg-white overflow-hidden">
                       <span className="pl-2 text-gray-400 text-sm">$</span>
                       <input
@@ -628,38 +646,12 @@ export default function Dashboard() {
                   </div>
                 </div>
 
-                {/* Subtotal preview */}
-                {newQty && newPrice && parseInt(newQty) > 0 && parseFloat(newPrice) > 0 && (
-                  <div className="flex justify-between items-center text-xs bg-white rounded-lg px-3 py-1.5 mb-2 border border-[#00a884]/20">
-                    <span className="text-gray-500">Subtotal:</span>
-                    <span className="font-bold text-[#00a884]">
-                      ${(parseInt(newQty) * parseFloat(newPrice)).toLocaleString('es-CO')}
-                    </span>
-                  </div>
-                )}
-
                 <button
                   onClick={handleAddNewItem}
                   className="w-full py-2 bg-[#00a884] text-white rounded-lg text-sm font-semibold hover:bg-[#008f6f] active:scale-[0.98] transition-all flex items-center justify-center gap-1.5"
                 >
                   <Plus size={15} /> Agregar al pedido
                 </button>
-              </div>
-            </div>
-
-            {/* Total */}
-            {editingItems.length > 0 && (
-              <div className="border-t bg-gray-50 px-4 sm:px-6 py-4">
-                <div className="flex justify-between items-center mb-2">
-                  <span className="text-sm text-gray-600">Total unidades:</span>
-                  <span className="font-bold text-gray-800">{editingItems.reduce((s, i) => s + i.quantity, 0)}</span>
-                </div>
-                <div className="flex justify-between items-center">
-                  <span className="font-bold text-gray-800">Total pedido:</span>
-                  <span className="text-xl font-bold text-[#00a884]">
-                    ${editingItems.reduce((s, i) => s + (i.price || 0) * i.quantity, 0).toLocaleString('es-CO')}
-                  </span>
-                </div>
               </div>
             )}
 
