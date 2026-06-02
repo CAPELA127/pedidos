@@ -1,7 +1,7 @@
 "use client";
 
-import React, { useState, useEffect, useCallback } from 'react';
-import { Search, Download, CheckCircle, Package, Truck, RefreshCw, X, Edit2, Save, LayoutGrid } from 'lucide-react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { Search, Download, CheckCircle, Package, Truck, RefreshCw, X, Edit2, Save, LayoutGrid, Plus } from 'lucide-react';
 
 interface OrderItem {
   ref: string;
@@ -36,6 +36,17 @@ export default function Dashboard() {
   const [editingItems, setEditingItems] = useState<OrderItem[]>([]);
   const [isEditing, setIsEditing] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
+
+  // ── Agregar producto nuevo al pedido ──
+  const [newRef, setNewRef] = useState('');
+  const [newName, setNewName] = useState('');
+  const [newPrice, setNewPrice] = useState('');
+  const [newQty, setNewQty] = useState('1');
+  const [suggestions, setSuggestions] = useState<{ ref: string; name: string; price: number | null }[]>([]);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [suggestionsLoading, setSuggestionsLoading] = useState(false);
+  const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const addProductRef = useRef<HTMLDivElement>(null);
 
   const fetchOrders = useCallback(async () => {
     setIsLoading(true);
@@ -186,6 +197,59 @@ export default function Dashboard() {
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+  };
+
+  // Cerrar dropdown al click fuera
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (addProductRef.current && !addProductRef.current.contains(e.target as Node)) {
+        setShowSuggestions(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
+
+  const handleRefInput = (value: string) => {
+    setNewRef(value);
+    setNewName('');
+    setNewPrice('');
+    if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
+    if (value.length < 1) { setSuggestions([]); setShowSuggestions(false); return; }
+    setSuggestionsLoading(true);
+    setShowSuggestions(true);
+    searchTimeoutRef.current = setTimeout(async () => {
+      try {
+        const res = await fetch(`/api/inventory?q=${encodeURIComponent(value)}`);
+        const data = await res.json();
+        setSuggestions(data.products || []);
+      } catch { setSuggestions([]); }
+      finally { setSuggestionsLoading(false); }
+    }, 280);
+  };
+
+  const handleSelectSuggestion = (p: { ref: string; name: string; price: number | null }) => {
+    setNewRef(p.ref);
+    setNewName(p.name);
+    setNewPrice(p.price ? String(p.price) : '');
+    setSuggestions([]);
+    setShowSuggestions(false);
+  };
+
+  const handleAddNewItem = () => {
+    const ref = newRef.trim().toUpperCase();
+    const name = newName.trim() || ref;
+    const qty = parseInt(newQty, 10);
+    const price = parseFloat(newPrice);
+    if (!ref) { alert('Ingresa una referencia'); return; }
+    if (!qty || qty <= 0) { alert('Ingresa una cantidad válida'); return; }
+    if (!price || price <= 0) { alert('Ingresa un precio válido'); return; }
+    setEditingItems(prev => {
+      const existing = prev.find(i => i.ref === ref);
+      if (existing) return prev.map(i => i.ref === ref ? { ...i, quantity: i.quantity + qty } : i);
+      return [...prev, { ref, name, quantity: qty, price }];
+    });
+    setNewRef(''); setNewName(''); setNewPrice(''); setNewQty('1');
   };
 
   const TABS = [
@@ -476,6 +540,111 @@ export default function Dashboard() {
                   <p className="text-sm">No hay items en este pedido</p>
                 </div>
               )}
+
+              {/* ── Formulario agregar producto ── */}
+              <div ref={addProductRef} className="border-2 border-dashed border-[#00a884]/40 rounded-xl p-4 bg-[#f0fdf8] mt-2">
+                <p className="text-xs font-bold text-[#00a884] mb-3 flex items-center gap-1.5">
+                  <Plus size={13} /> Agregar producto al pedido
+                </p>
+
+                {/* Referencia con autocomplete */}
+                <div className="relative mb-2">
+                  <label className="text-xs text-gray-500 font-medium block mb-1">Referencia</label>
+                  <input
+                    type="text"
+                    value={newRef}
+                    onChange={e => handleRefInput(e.target.value)}
+                    onFocus={() => suggestions.length > 0 && setShowSuggestions(true)}
+                    placeholder="Ej: 4162-9, MASC-001..."
+                    className="w-full px-3 py-2 border-2 border-gray-200 rounded-lg text-sm font-mono font-semibold focus:outline-none focus:border-[#00a884] bg-white uppercase"
+                  />
+                  {showSuggestions && (
+                    <div className="absolute top-full left-0 right-0 mt-1 bg-white rounded-xl shadow-lg border border-gray-100 z-30 max-h-48 overflow-y-auto">
+                      {suggestionsLoading ? (
+                        <div className="p-3 text-center text-xs text-gray-400">Buscando...</div>
+                      ) : suggestions.length > 0 ? (
+                        suggestions.map(p => (
+                          <button
+                            key={p.ref}
+                            onMouseDown={() => handleSelectSuggestion(p)}
+                            className="w-full text-left px-4 py-2.5 hover:bg-[#f0fdf8] border-b border-gray-50 last:border-0 transition-colors"
+                          >
+                            <div className="flex justify-between items-center gap-2">
+                              <div className="min-w-0">
+                                <p className="text-xs font-mono font-bold text-gray-700">{p.ref}</p>
+                                <p className="text-xs text-gray-500 truncate">{p.name}</p>
+                              </div>
+                              {p.price != null && (
+                                <span className="text-xs font-semibold text-[#00a884] flex-shrink-0">
+                                  ${p.price.toLocaleString('es-CO')}
+                                </span>
+                              )}
+                            </div>
+                          </button>
+                        ))
+                      ) : (
+                        <div className="p-3 text-center text-xs text-gray-400">
+                          Sin resultados — puedes ingresar la ref manualmente
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                {/* Nombre (se llena solo, editable) */}
+                <div className="mb-2">
+                  <label className="text-xs text-gray-500 font-medium block mb-1">Nombre del producto</label>
+                  <input
+                    type="text"
+                    value={newName}
+                    onChange={e => setNewName(e.target.value)}
+                    placeholder="Se completa automáticamente..."
+                    className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:border-[#00a884] bg-white"
+                  />
+                </div>
+
+                {/* Cantidad + Precio en fila */}
+                <div className="grid grid-cols-2 gap-2 mb-3">
+                  <div>
+                    <label className="text-xs text-gray-500 font-medium block mb-1">Cantidad</label>
+                    <input
+                      type="number" min="1" value={newQty}
+                      onChange={e => setNewQty(e.target.value)}
+                      placeholder="1"
+                      className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm font-semibold text-[#00a884] focus:outline-none focus:border-[#00a884] bg-white"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs text-gray-500 font-medium block mb-1">Precio unit. (COP)</label>
+                    <div className="flex items-center border border-gray-200 rounded-lg focus-within:border-[#00a884] bg-white overflow-hidden">
+                      <span className="pl-2 text-gray-400 text-sm">$</span>
+                      <input
+                        type="number" min="0" value={newPrice}
+                        onChange={e => setNewPrice(e.target.value)}
+                        placeholder="0"
+                        className="flex-1 px-2 py-2 text-sm font-semibold text-blue-600 focus:outline-none bg-transparent"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Subtotal preview */}
+                {newQty && newPrice && parseInt(newQty) > 0 && parseFloat(newPrice) > 0 && (
+                  <div className="flex justify-between items-center text-xs bg-white rounded-lg px-3 py-1.5 mb-2 border border-[#00a884]/20">
+                    <span className="text-gray-500">Subtotal:</span>
+                    <span className="font-bold text-[#00a884]">
+                      ${(parseInt(newQty) * parseFloat(newPrice)).toLocaleString('es-CO')}
+                    </span>
+                  </div>
+                )}
+
+                <button
+                  onClick={handleAddNewItem}
+                  className="w-full py-2 bg-[#00a884] text-white rounded-lg text-sm font-semibold hover:bg-[#008f6f] active:scale-[0.98] transition-all flex items-center justify-center gap-1.5"
+                >
+                  <Plus size={15} /> Agregar al pedido
+                </button>
+              </div>
             </div>
 
             {/* Total */}
