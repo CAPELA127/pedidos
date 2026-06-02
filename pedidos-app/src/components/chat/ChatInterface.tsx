@@ -98,7 +98,8 @@ export default function ChatInterface() {
   const [searchResults, setSearchResults] = useState<CustomerSearchResult[]>([]);
   const [showDropdown, setShowDropdown] = useState(false);
   const [searchLoading, setSearchLoading] = useState(false);
-  const [activeProduct, setActiveProduct] = useState<{ imageUrl: string; ref: string; name: string; price?: number; quantity?: number } | null>(null);
+  const [activeProduct, setActiveProduct] = useState<{ imageUrl: string; ref: string; name: string; price?: number; quantity?: number; isNew?: boolean } | null>(null);
+  const [pendingImageFile, setPendingImageFile] = useState<File | null>(null);
   const [showConfirmModal, setShowConfirmModal] = useState(false);
   const [modalDeliveryAddress, setModalDeliveryAddress] = useState('');
   const [modalNotes, setModalNotes] = useState('');
@@ -318,7 +319,8 @@ export default function ChatInterface() {
           timestamp: new Date()
         }]);
 
-        setActiveProduct({ imageUrl: url, ref, name, price, quantity });
+        setPendingImageFile(compressedFile);
+        setActiveProduct({ imageUrl: url, ref, name, price, quantity, isNew: !!data.warning });
       } else {
         // Si el servidor devolvió un error de API (no de imagen), mostrar mensaje distinto
         const isApiError = !res.ok || (data.error && !data.error.includes('referencia'));
@@ -344,7 +346,8 @@ export default function ChatInterface() {
       }]);
     } finally {
       setIsProcessing(false);
-      URL.revokeObjectURL(url);
+      // No revocar la URL aquí — se necesita para mostrar la imagen en ProductCard
+      // Se revoca en handleProductCardAdd / onClose del ProductCard
     }
   };
 
@@ -728,18 +731,21 @@ export default function ChatInterface() {
     }]);
   };
 
-  const handleProductCardAdd = (quantity: number, price: number, name: string, notes?: string) => {
+  const handleProductCardAdd = async (quantity: number, price: number, name: string, ref: string, notes?: string) => {
     if (!activeProduct) return;
+    const finalRef = ref || activeProduct.ref;
     const notesKey = (notes || '').trim().toLowerCase();
+
     setOrderItems(prev => {
       const existing = prev.find(i =>
-        i.ref === activeProduct.ref && (i.notes || '').trim().toLowerCase() === notesKey
+        i.ref === finalRef && (i.notes || '').trim().toLowerCase() === notesKey
       );
       if (existing) {
         return prev.map(i => i.itemId === existing.itemId ? { ...i, name, quantity, price, notes: notes || undefined } : i);
       }
-      return [...prev, { itemId: `${activeProduct.ref}_${Date.now()}`, ref: activeProduct.ref, name, quantity, price, notes: notes || undefined }];
+      return [...prev, { itemId: `${finalRef}_${Date.now()}`, ref: finalRef, name, quantity, price, notes: notes || undefined }];
     });
+
     const label = notes ? `${name} (${notes})` : name;
     setMessages(prev => [...prev, {
       id: Date.now().toString(),
@@ -747,6 +753,30 @@ export default function ChatInterface() {
       content: `✅ ${label}: ${quantity} und @ COP $${price.toLocaleString('es-CO')}`,
       timestamp: new Date()
     }]);
+
+    // Si es producto nuevo, guardarlo en inventario con la foto
+    if (activeProduct.isNew && pendingImageFile) {
+      try {
+        const formData = new FormData();
+        formData.append('ref', finalRef);
+        formData.append('name', name);
+        formData.append('price', String(price));
+        formData.append('image', pendingImageFile);
+        await fetch('/api/products', { method: 'POST', body: formData });
+        setMessages(prev => [...prev, {
+          id: Date.now().toString(),
+          type: 'system',
+          content: `📦 Guardado en inventario: ${finalRef}`,
+          timestamp: new Date()
+        }]);
+      } catch {
+        // Silencioso — el pedido igual quedó guardado
+      }
+    }
+
+    // Revocar URL y limpiar
+    if (activeProduct.imageUrl) URL.revokeObjectURL(activeProduct.imageUrl);
+    setPendingImageFile(null);
     setActiveProduct(null);
   };
 
@@ -1023,8 +1053,13 @@ export default function ChatInterface() {
               name={activeProduct.name}
               price={activeProduct.price}
               initialQuantity={activeProduct.quantity}
+              isNewProduct={activeProduct.isNew}
               onAddToCart={handleProductCardAdd}
-              onClose={() => setActiveProduct(null)}
+              onClose={() => {
+                if (activeProduct?.imageUrl) URL.revokeObjectURL(activeProduct.imageUrl);
+                setPendingImageFile(null);
+                setActiveProduct(null);
+              }}
               loading={isProcessing}
             />
           </div>

@@ -9,7 +9,8 @@ interface ProductCardProps {
   name: string;
   price?: number;
   initialQuantity?: number;
-  onAddToCart: (quantity: number, price: number, name: string, notes?: string) => void;
+  isNewProduct?: boolean;
+  onAddToCart: (quantity: number, price: number, name: string, ref: string, notes?: string) => void;
   onClose?: () => void;
   loading?: boolean;
 }
@@ -20,6 +21,7 @@ export default function ProductCard({
   name,
   price,
   initialQuantity,
+  isNewProduct = false,
   onAddToCart,
   onClose,
   loading = false
@@ -27,6 +29,7 @@ export default function ProductCard({
   const [quantity, setQuantity] = useState(initialQuantity ? String(initialQuantity) : '1');
   const [editPrice, setEditPrice] = useState(price ? String(price) : '');
   const [editName, setEditName] = useState(name === 'Producto Desconocido' ? '' : name);
+  const [editRef, setEditRef] = useState(productRef);
   const [notes, setNotes] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -35,11 +38,12 @@ export default function ProductCard({
     if (!qty || qty <= 0) { alert('Ingresa una cantidad válida'); return; }
     const finalPrice = parseInt(editPrice, 10);
     if (!finalPrice || finalPrice <= 0) { alert('Ingresa un precio válido'); return; }
-    const finalName = editName.trim() || productRef;
+    const finalName = editName.trim() || editRef;
+    const finalRef = editRef.trim().toUpperCase() || productRef;
 
     setIsSubmitting(true);
     try {
-      await onAddToCart(qty, finalPrice, finalName, notes.trim() || undefined);
+      await onAddToCart(qty, finalPrice, finalName, finalRef, notes.trim() || undefined);
       setQuantity('1');
       setNotes('');
     } finally {
@@ -61,12 +65,38 @@ export default function ProductCard({
             <X size={15} className="text-gray-600" />
           </button>
         )}
-        <span className="absolute bottom-2 left-2 bg-black/60 text-white text-xs font-mono px-2 py-0.5 rounded">
-          {productRef}
-        </span>
+        {!isNewProduct && (
+          <span className="absolute bottom-2 left-2 bg-black/60 text-white text-xs font-mono px-2 py-0.5 rounded">
+            {productRef}
+          </span>
+        )}
+        {isNewProduct && (
+          <span className="absolute bottom-2 left-2 bg-orange-500 text-white text-xs font-semibold px-2 py-0.5 rounded">
+            ⚠ No en inventario
+          </span>
+        )}
       </div>
 
       <div className="p-3 space-y-2">
+        {/* Referencia editable — solo para productos nuevos */}
+        {isNewProduct && (
+          <div>
+            <label className="text-xs font-semibold text-orange-600 block mb-0.5 flex items-center gap-1">
+              ✏️ Referencia
+              <span className="text-gray-400 font-normal">(edita si está incorrecta)</span>
+            </label>
+            <input
+              type="text"
+              value={editRef}
+              onChange={e => setEditRef(e.target.value.toUpperCase())}
+              placeholder="Ej: MASC-001"
+              className="w-full px-3 py-1.5 border-2 border-orange-300 bg-orange-50 rounded-lg text-sm font-mono font-bold focus:outline-none focus:ring-2 focus:ring-orange-400 uppercase"
+              disabled={loading || isSubmitting}
+            />
+            <p className="text-[10px] text-orange-500 mt-0.5">Al agregar, este producto se guardará en inventario</p>
+          </div>
+        )}
+
         {/* Nombre */}
         <div>
           <label className="text-xs text-gray-500 font-medium block mb-0.5">Producto</label>
