@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { Search, Download, CheckCircle, Package, Truck, RefreshCw, X, Edit2, Save } from 'lucide-react';
+import { Search, Download, CheckCircle, Package, Truck, RefreshCw, X, Edit2, Save, LayoutGrid } from 'lucide-react';
 
 interface OrderItem {
   ref: string;
@@ -169,7 +169,7 @@ export default function Dashboard() {
   };
 
   const filtered = orders.filter(o => {
-    const matchesTab = o.status === activeTab;
+    const matchesTab = activeTab === 'Todos' || o.status === activeTab;
     const matchesSearch = !search ||
       o.customer?.toLowerCase().includes(search.toLowerCase()) ||
       o.id?.toLowerCase().includes(search.toLowerCase()) ||
@@ -189,12 +189,16 @@ export default function Dashboard() {
   };
 
   const TABS = [
+    { key: 'Todos', label: 'Todos', Icon: LayoutGrid, color: 'text-gray-500' },
     { key: 'Pendiente', label: 'Pendientes', Icon: Package, color: 'text-orange-500' },
+    { key: 'Empacado', label: 'Empacados', Icon: CheckCircle, color: 'text-blue-500' },
     { key: 'Enviado', label: 'Enviados', Icon: Truck, color: 'text-green-500' },
   ];
 
   const counts = {
+    Todos: orders.length,
     Pendiente: orders.filter(o => o.status === 'Pendiente').length,
+    Empacado: orders.filter(o => o.status === 'Empacado').length,
     Enviado: orders.filter(o => o.status === 'Enviado').length,
   };
 
@@ -271,6 +275,7 @@ export default function Dashboard() {
                     <th className="px-4 py-3 font-medium hidden md:table-cell">Email</th>
                     <th className="px-4 py-3 font-medium">Productos</th>
                     <th className="px-4 py-3 font-medium">Und.</th>
+                    <th className="px-4 py-3 font-medium hidden sm:table-cell">Estado</th>
                     <th className="px-4 py-3 font-medium hidden sm:table-cell">Fecha</th>
                     <th className="px-4 py-3 font-medium">Acción</th>
                   </tr>
@@ -304,6 +309,15 @@ export default function Dashboard() {
                       <td className="px-4 py-3">
                         <span className="font-bold text-gray-800">{order.total_items}</span>
                       </td>
+                      <td className="px-4 py-3 hidden sm:table-cell">
+                        <span className={`text-xs font-semibold px-2 py-1 rounded-full ${
+                          order.status === 'Pendiente' ? 'bg-orange-100 text-orange-700' :
+                          order.status === 'Empacado'  ? 'bg-blue-100 text-blue-700' :
+                          'bg-green-100 text-green-700'
+                        }`}>
+                          {order.status}
+                        </span>
+                      </td>
                       <td className="px-4 py-3 text-sm text-gray-500 hidden sm:table-cell">{order.date}</td>
                       <td className="px-4 py-3">
                         <div className="flex gap-1.5 flex-col">
@@ -314,7 +328,7 @@ export default function Dashboard() {
                             <Edit2 size={11} />
                             Editar
                           </button>
-                          {activeTab === 'Pendiente' && (
+                          {(activeTab === 'Pendiente' || activeTab === 'Todos') && order.status === 'Pendiente' && (
                             <button
                               onClick={() => updateStatus(order.id, 'Enviado')}
                               className="text-xs bg-green-50 text-green-600 border border-green-200 px-2.5 py-1.5 rounded-lg hover:bg-green-100 transition-colors font-medium whitespace-nowrap"
@@ -322,7 +336,15 @@ export default function Dashboard() {
                               Enviar
                             </button>
                           )}
-                          {activeTab === 'Enviado' && (
+                          {(activeTab === 'Empacado' || activeTab === 'Todos') && order.status === 'Empacado' && (
+                            <button
+                              onClick={() => updateStatus(order.id, 'Enviado')}
+                              className="text-xs bg-green-50 text-green-600 border border-green-200 px-2.5 py-1.5 rounded-lg hover:bg-green-100 transition-colors font-medium whitespace-nowrap"
+                            >
+                              Enviar
+                            </button>
+                          )}
+                          {order.status === 'Enviado' && (
                             <span className="text-xs text-gray-400 italic">✓ Listo</span>
                           )}
                         </div>
