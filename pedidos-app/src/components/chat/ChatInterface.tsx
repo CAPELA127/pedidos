@@ -39,7 +39,8 @@ type ConversationState =
   | 'awaiting_city'
   | 'awaiting_departamento'
   | 'awaiting_address'
-  | 'ready';
+  | 'ready'
+  | 'completed';
 
 interface CustomerData {
   name: string;
@@ -101,6 +102,15 @@ export default function ChatInterface() {
   const [showConfirmModal, setShowConfirmModal] = useState(false);
   const [modalDeliveryAddress, setModalDeliveryAddress] = useState('');
   const [modalNotes, setModalNotes] = useState('');
+  const [confirmedOrder, setConfirmedOrder] = useState<{
+    id: string;
+    customer: string;
+    vendor: string;
+    items: OrderItem[];
+    total: number;
+    deliveryAddress?: string;
+    notes?: string;
+  } | null>(null);
   const [showCartDrawer, setShowCartDrawer] = useState(false);
   const [isDraggingOver, setIsDraggingOver] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -776,13 +786,18 @@ export default function ChatInterface() {
 
       const data = await res.json();
       if (res.ok && data.success) {
-        setMessages(prev => [...prev, {
-          id: Date.now().toString(),
-          type: 'bot',
-          content: `🎉 ¡Pedido ${data.order?.id || orderId} confirmado! La bodega lo está preparando.`,
-          timestamp: new Date()
-        }]);
+        const finalId = data.order?.id || orderId;
+        setConfirmedOrder({
+          id: finalId,
+          customer: customerData.name,
+          vendor: vendorName,
+          items: [...orderItems],
+          total: orderItems.reduce((t, i) => t + (i.price || 0) * i.quantity, 0),
+          deliveryAddress: deliveryAddress?.trim() || undefined,
+          notes: orderNotes?.trim() || undefined,
+        });
         setOrderItems([]);
+        setConversationState('completed');
       } else {
         const errMsg = data?.message || data?.error || `HTTP ${res.status}`;
         console.error('Error confirmando pedido:', errMsg, data);
@@ -800,6 +815,24 @@ export default function ChatInterface() {
     } finally {
       setIsSending(false);
     }
+  };
+
+  const handleNuevoPedido = () => {
+    setMessages([{
+      id: '1',
+      type: 'bot',
+      content: '¡Hola! 👋 ¿Cuál es tu nombre? (vendedor)',
+      timestamp: new Date()
+    }]);
+    setOrderItems([]);
+    setConversationState('awaiting_vendor');
+    setVendorName('');
+    setCustomerData({ name: '', email: '' });
+    setConfirmedOrder(null);
+    setActiveProduct(null);
+    setInputText('');
+    setSearchQuery('');
+    setSearchResults([]);
   };
 
   const inputPlaceholder =
@@ -1346,6 +1379,113 @@ export default function ChatInterface() {
                 {isSending ? 'Enviando...' : '✓ Confirmar Pedido'}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Pantalla de éxito — pedido confirmado */}
+      {conversationState === 'completed' && confirmedOrder && (
+        <div className="fixed inset-0 bg-[#efeae2] z-50 flex flex-col overflow-y-auto">
+          {/* Header verde */}
+          <div className="bg-[#00a884] text-white px-5 pt-12 pb-8 flex flex-col items-center text-center flex-shrink-0">
+            <div className="w-16 h-16 bg-white rounded-full flex items-center justify-center mb-4 shadow-lg">
+              <Check size={32} className="text-[#00a884]" strokeWidth={3} />
+            </div>
+            <h1 className="text-xl font-bold">¡Pedido enviado!</h1>
+            <p className="text-white/80 text-sm mt-1">Tu pedido fue recibido y está en cola</p>
+            <div className="mt-3 bg-white/20 rounded-full px-4 py-1.5">
+              <span className="text-white font-mono font-bold tracking-wider text-sm">{confirmedOrder.id}</span>
+            </div>
+          </div>
+
+          {/* Detalles */}
+          <div className="flex-1 px-4 py-5 space-y-4 max-w-lg mx-auto w-full">
+
+            {/* Info pedido */}
+            <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
+              <div className="px-4 py-3 border-b border-gray-100">
+                <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Información del pedido</p>
+              </div>
+              <div className="px-4 py-3 space-y-2">
+                <div className="flex justify-between text-sm">
+                  <span className="text-gray-500">Cliente</span>
+                  <span className="font-semibold text-gray-800">{confirmedOrder.customer}</span>
+                </div>
+                {confirmedOrder.vendor && (
+                  <div className="flex justify-between text-sm">
+                    <span className="text-gray-500">Vendedor</span>
+                    <span className="font-semibold text-gray-800">{confirmedOrder.vendor}</span>
+                  </div>
+                )}
+                {confirmedOrder.deliveryAddress && (
+                  <div className="flex justify-between text-sm gap-4">
+                    <span className="text-gray-500 flex-shrink-0">Entrega</span>
+                    <span className="font-semibold text-gray-800 text-right">{confirmedOrder.deliveryAddress}</span>
+                  </div>
+                )}
+                {confirmedOrder.notes && (
+                  <div className="flex justify-between text-sm gap-4">
+                    <span className="text-gray-500 flex-shrink-0">Notas</span>
+                    <span className="text-gray-700 text-right italic">{confirmedOrder.notes}</span>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Productos */}
+            <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
+              <div className="px-4 py-3 border-b border-gray-100">
+                <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">
+                  Productos · {confirmedOrder.items.reduce((s, i) => s + i.quantity, 0)} und
+                </p>
+              </div>
+              <div className="divide-y divide-gray-50">
+                {confirmedOrder.items.map(item => (
+                  <div key={item.itemId} className="px-4 py-3 flex justify-between items-center gap-2">
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium text-gray-800 truncate">
+                        {item.notes ? `${item.name} (${item.notes})` : item.name}
+                      </p>
+                      <p className="text-xs text-gray-400 font-mono">REF: {item.ref} · ×{item.quantity}</p>
+                    </div>
+                    {item.price ? (
+                      <span className="text-sm font-semibold text-gray-700 flex-shrink-0">
+                        ${(item.price * item.quantity).toLocaleString('es-CO')}
+                      </span>
+                    ) : (
+                      <span className="text-xs text-gray-300 flex-shrink-0">sin precio</span>
+                    )}
+                  </div>
+                ))}
+              </div>
+              {confirmedOrder.total > 0 && (
+                <div className="px-4 py-3 bg-gray-50 flex justify-between items-center border-t border-gray-100">
+                  <span className="text-sm font-semibold text-gray-700">Total</span>
+                  <span className="text-base font-bold text-[#00a884]">
+                    COP ${confirmedOrder.total.toLocaleString('es-CO')}
+                  </span>
+                </div>
+              )}
+            </div>
+
+            {/* Estado */}
+            <div className="bg-yellow-50 border border-yellow-200 rounded-2xl px-4 py-3 flex items-center gap-3">
+              <div className="w-2.5 h-2.5 bg-yellow-400 rounded-full flex-shrink-0 animate-pulse" />
+              <div>
+                <p className="text-sm font-semibold text-yellow-800">Estado: Pendiente</p>
+                <p className="text-xs text-yellow-600 mt-0.5">La bodega comenzará a prepararlo pronto</p>
+              </div>
+            </div>
+          </div>
+
+          {/* Botón nuevo pedido */}
+          <div className="px-4 pb-8 pt-2 flex-shrink-0 max-w-lg mx-auto w-full">
+            <button
+              onClick={handleNuevoPedido}
+              className="w-full py-3.5 bg-[#00a884] text-white rounded-2xl font-bold text-base shadow-lg hover:bg-[#008f6f] active:scale-[0.98] transition-all"
+            >
+              + Nuevo pedido
+            </button>
           </div>
         </div>
       )}
