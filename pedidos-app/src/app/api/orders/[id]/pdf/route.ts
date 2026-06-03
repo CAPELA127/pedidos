@@ -253,8 +253,97 @@ export async function GET(
       margin: { left: margin, right: margin },
     });
 
-    // Footer
+    // ── Sección Control de Empaque ─────────────────────────────────────────────
     const pageHeight = doc.internal.pageSize.getHeight();
+    let yE = (doc as any).lastAutoTable.finalY + 10;
+
+    // Si queda poco espacio en la página, saltar a nueva página
+    if (yE + 70 > pageHeight - 12) {
+      doc.addPage();
+      yE = 20;
+    }
+
+    // Título sección
+    doc.setFillColor(30, 30, 30);
+    doc.rect(margin, yE, contentWidth, 7, 'F');
+    doc.setTextColor(255, 255, 255);
+    doc.setFontSize(9);
+    doc.setFont('helvetica', 'bold');
+    doc.text('CONTROL DE EMPAQUE Y ENVÍO', margin + 3, yE + 5);
+    yE += 10;
+
+    doc.setTextColor(0, 0, 0);
+    doc.setFont('helvetica', 'normal');
+
+    // Función helper: dibuja un campo con label + línea para firma
+    const drawField = (label: string, x: number, y: number, w: number, h: number = 14) => {
+      // Borde del campo
+      doc.setDrawColor(180, 180, 180);
+      doc.setLineWidth(0.3);
+      doc.rect(x, y, w, h);
+      // Label pequeño arriba
+      doc.setFontSize(6.5);
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(80, 80, 80);
+      doc.text(label.toUpperCase(), x + 2, y + 4.5);
+      // Línea de escritura
+      doc.setDrawColor(210, 210, 210);
+      doc.setLineWidth(0.2);
+      doc.line(x + 2, y + 10, x + w - 2, y + 10);
+    };
+
+    const colW = contentWidth / 2 - 1; // dos columnas con 2mm gap
+    const col1x = margin;
+    const col2x = margin + colW + 2;
+    const fieldH = 16;
+    const gap = 3;
+
+    // Fila 1: Nombre de quien sacó | Nombre de quien verificó
+    drawField('Nombre de quien sacó', col1x, yE, colW, fieldH);
+    drawField('Nombre de quien verificó', col2x, yE, colW, fieldH);
+    yE += fieldH + gap;
+
+    // Fila 2: Hora de empaque | Cámara de empaque
+    drawField('Hora de empaque', col1x, yE, colW, fieldH);
+    drawField('Cámara de empaque', col2x, yE, colW, fieldH);
+    yE += fieldH + gap;
+
+    // Fila 3: Fecha (media columna) + espacio
+    drawField('Fecha', col1x, yE, colW, fieldH);
+    yE += fieldH + gap;
+
+    // Fila 4: Número de cajas — fila completa con casillas numeradas
+    const cajasH = 18;
+    doc.setDrawColor(180, 180, 180);
+    doc.setLineWidth(0.3);
+    doc.rect(col1x, yE, contentWidth, cajasH);
+    doc.setFontSize(6.5);
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(80, 80, 80);
+    doc.text('NÚMERO DE CAJAS', col1x + 2, yE + 4.5);
+
+    // Casillas numeradas 1-20
+    const totalCajas = 20;
+    const cajasStartX = col1x + 36;
+    const cajasAreaW = contentWidth - 38;
+    const cajaW = cajasAreaW / totalCajas;
+    const cajaY = yE + 5;
+    const cajaH = 9;
+
+    for (let i = 1; i <= totalCajas; i++) {
+      const cx = cajasStartX + (i - 1) * cajaW;
+      doc.setDrawColor(160, 160, 160);
+      doc.setLineWidth(0.25);
+      doc.rect(cx, cajaY, cajaW, cajaH);
+      doc.setFontSize(5.5);
+      doc.setFont('helvetica', 'normal');
+      doc.setTextColor(100, 100, 100);
+      doc.text(String(i), cx + cajaW / 2, cajaY + 6, { align: 'center' });
+    }
+
+    yE += cajasH + 2;
+
+    // Footer generado
     doc.setFontSize(7);
     doc.setFont('helvetica', 'normal');
     doc.setTextColor(150, 150, 150);
