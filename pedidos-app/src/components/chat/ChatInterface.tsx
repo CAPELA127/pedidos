@@ -355,6 +355,64 @@ export default function ChatInterface() {
   const handleSend = async () => {
     if (!inputText.trim()) return;
 
+    // ── REFERENCIA RÁPIDA (estado ready) ──
+    // Si el usuario escribe una referencia sin espacios (ej: PTZ033, R1998), abrir ProductCard directamente
+    if (conversationState === 'ready' && !activeProduct && /^[A-Z0-9\-]{3,20}$/i.test(inputText.trim())) {
+      const refInput = inputText.trim().toUpperCase();
+      setMessages(prev => [...prev, { id: Date.now().toString(), type: 'user', content: refInput, timestamp: new Date() }]);
+      setInputText('');
+
+      // Buscar en inventario
+      setIsProcessing(true);
+      try {
+        const res = await fetch(`/api/inventory?q=${encodeURIComponent(refInput)}`);
+        const data = await res.json();
+        const found = data.products?.find((p: any) => p.ref === refInput);
+
+        if (found) {
+          // Producto existe en inventario
+          setActiveProduct({
+            imageUrl: 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22%3E%3Crect fill=%22%23f0f0f0%22 width=%22100%22 height=%22100%22/%3E%3Ctext x=%2250%22 y=%2250%22 font-size=%2224%22 fill=%22%23999%22 text-anchor=%22middle%22 dominant-baseline=%22middle%22%3E📦%3C/text%3E%3C/svg%3E',
+            ref: found.ref,
+            name: found.name,
+            price: found.price,
+            isNew: false
+          });
+          setMessages(prev => [...prev, {
+            id: Date.now().toString(),
+            type: 'bot',
+            content: `✅ ${found.name} (${found.ref}) - COP $${found.price?.toLocaleString('es-CO') || 'N/A'}`,
+            timestamp: new Date()
+          }]);
+        } else {
+          // Producto no existe — crear como nuevo
+          setActiveProduct({
+            imageUrl: 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22%3E%3Crect fill=%22%23fff3cd%22 width=%22100%22 height=%22100%22/%3E%3Ctext x=%2250%22 y=%2250%22 font-size=%2224%22 fill=%22%23ff9800%22 text-anchor=%22middle%22 dominant-baseline=%22middle%22%3E❓%3C/text%3E%3C/svg%3E',
+            ref: refInput,
+            name: 'Producto Desconocido',
+            isNew: true
+          });
+          setMessages(prev => [...prev, {
+            id: Date.now().toString(),
+            type: 'bot',
+            content: `⚠️ ${refInput} no está en inventario. Ingresa el nombre y precio.`,
+            timestamp: new Date()
+          }]);
+        }
+      } catch (err) {
+        console.error('Error buscando referencia:', err);
+        setMessages(prev => [...prev, {
+          id: Date.now().toString(),
+          type: 'bot',
+          content: '❌ Error buscando referencia. Intenta de nuevo.',
+          timestamp: new Date()
+        }]);
+      } finally {
+        setIsProcessing(false);
+      }
+      return;
+    }
+
     // ── VENDEDOR ──
     if (conversationState === 'awaiting_vendor') {
       const name = inputText.trim();

@@ -9,6 +9,7 @@ interface OrderItem {
   quantity: number;
   price?: number;
   unit_type?: 'unidad' | 'docena' | 'box';
+  notes?: string;
 }
 
 interface OrderPayload {
@@ -44,6 +45,7 @@ export async function GET() {
           product_name,
           quantity,
           unit_type,
+          notes,
           price_at_time
         )
       `)
@@ -69,6 +71,7 @@ export async function GET() {
         name: oi.product_name || oi.product_ref,
         quantity: oi.quantity,
         unit_type: oi.unit_type || 'unidad',
+        notes: oi.notes || undefined,
         price: oi.price_at_time
       })),
       status: o.status,
@@ -155,6 +158,7 @@ export async function POST(req: Request) {
       product_name: item.name,          // ← nombre real del inventario
       quantity: item.quantity,
       unit_type: item.unit_type || 'unidad',
+      notes: item.notes || null,        // ← variación/tipo (ej: BRILLO, TINTA)
       price_at_time: item.price || 0
     }));
 

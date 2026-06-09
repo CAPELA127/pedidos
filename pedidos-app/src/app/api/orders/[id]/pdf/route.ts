@@ -21,7 +21,7 @@ export async function GET(
         delivery_address,
         notes,
         customers (name, email, phone, local_name, city, neighborhood, address),
-        order_items (product_ref, product_name, quantity, unit_type, price_at_time)
+        order_items (product_ref, product_name, quantity, unit_type, notes, price_at_time)
       `)
       .eq('id', orderId)
       .single();
@@ -59,6 +59,7 @@ export async function GET(
       quantity: oi.quantity,
       price: oi.price_at_time,
       unit_type: oi.unit_type || 'unidad',
+      notes: oi.notes || null,
     }));
 
     // ── PDF ────────────────────────────────────────────────────────────────────
@@ -213,9 +214,11 @@ export async function GET(
 
     const productBody = items.map((item) => {
       const subtotal = (item.price || 0) * item.quantity;
+      // Si hay notas (variación), agrégalas al nombre
+      const displayName = item.notes ? `${item.name}\n(${item.notes})` : item.name;
       return [
         item.ref,
-        item.name,
+        displayName,
         item.quantity,
         item.unit_type || 'unidad',
         item.price ? `$${(item.price).toLocaleString('es-CO')}` : '-',

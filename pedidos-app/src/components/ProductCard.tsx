@@ -156,19 +156,24 @@ export default function ProductCard({
           />
         </div>
 
-        {/* Notas (color/variante) */}
+        {/* Notas (color/variante/tipo) */}
         <div>
           <label className="text-xs text-gray-500 font-medium block mb-0.5">
-            Nota / Color / Variante <span className="text-gray-400">(opcional)</span>
+            Variante / Tipo <span className="text-gray-400">(opcional)</span>
           </label>
           <input
             type="text"
             value={notes}
             onChange={e => setNotes(e.target.value)}
-            placeholder="Ej: Rojo, Talla L, Con cremallera..."
+            placeholder={isNewProduct ? "Ej: Rojo, Talla L, Con cremallera..." : "Ej: BRILLO, TINTA, Color Rojo..."}
             className="w-full px-3 py-1.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#00a884]"
             disabled={loading || isSubmitting}
           />
+          {!isNewProduct && (
+            <p className="text-[10px] text-gray-400 mt-0.5">
+              💡 Usa esto para diferenciar el mismo producto (ej: BRILLO vs TINTA)
+            </p>
+          )}
         </div>
 
         {/* Precio + Cantidad + Unidad */}
