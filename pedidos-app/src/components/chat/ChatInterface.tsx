@@ -12,6 +12,7 @@ interface OrderItem {
   quantity: number;
   price?: number;
   notes?: string;
+  unit_type?: 'unidad' | 'docena' | 'box';
 }
 
 interface Message {
@@ -731,26 +732,27 @@ export default function ChatInterface() {
     }]);
   };
 
-  const handleProductCardAdd = async (quantity: number, price: number, name: string, ref: string, notes?: string) => {
+  const handleProductCardAdd = async (quantity: number, price: number, name: string, ref: string, notes?: string, unit_type?: string) => {
     if (!activeProduct) return;
     const finalRef = ref || activeProduct.ref;
     const notesKey = (notes || '').trim().toLowerCase();
+    const finalUnitType = (unit_type || 'unidad') as 'unidad' | 'docena' | 'box';
 
     setOrderItems(prev => {
       const existing = prev.find(i =>
         i.ref === finalRef && (i.notes || '').trim().toLowerCase() === notesKey
       );
       if (existing) {
-        return prev.map(i => i.itemId === existing.itemId ? { ...i, name, quantity, price, notes: notes || undefined } : i);
+        return prev.map(i => i.itemId === existing.itemId ? { ...i, name, quantity, price, notes: notes || undefined, unit_type: finalUnitType } : i);
       }
-      return [...prev, { itemId: `${finalRef}_${Date.now()}`, ref: finalRef, name, quantity, price, notes: notes || undefined }];
+      return [...prev, { itemId: `${finalRef}_${Date.now()}`, ref: finalRef, name, quantity, price, notes: notes || undefined, unit_type: finalUnitType }];
     });
 
     const label = notes ? `${name} (${notes})` : name;
     setMessages(prev => [...prev, {
       id: Date.now().toString(),
       type: 'system',
-      content: `✅ ${label}: ${quantity} und @ COP $${price.toLocaleString('es-CO')}`,
+      content: `✅ ${label}: ${quantity} ${finalUnitType} @ COP $${price.toLocaleString('es-CO')}`,
       timestamp: new Date()
     }]);
 
@@ -1055,6 +1057,9 @@ export default function ChatInterface() {
               initialQuantity={activeProduct.quantity}
               isNewProduct={activeProduct.isNew}
               onAddToCart={handleProductCardAdd}
+              onIsNewChange={(isNew) => {
+                setActiveProduct(prev => prev ? { ...prev, isNew } : null);
+              }}
               onClose={() => {
                 if (activeProduct?.imageUrl) URL.revokeObjectURL(activeProduct.imageUrl);
                 setPendingImageFile(null);

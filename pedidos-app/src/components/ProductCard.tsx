@@ -10,9 +10,10 @@ interface ProductCardProps {
   price?: number;
   initialQuantity?: number;
   isNewProduct?: boolean;
-  onAddToCart: (quantity: number, price: number, name: string, ref: string, notes?: string) => void;
+  onAddToCart: (quantity: number, price: number, name: string, ref: string, notes?: string, unit_type?: string) => void;
   onClose?: () => void;
   loading?: boolean;
+  onIsNewChange?: (isNew: boolean) => void;
 }
 
 export default function ProductCard({
@@ -24,14 +25,18 @@ export default function ProductCard({
   isNewProduct = false,
   onAddToCart,
   onClose,
-  loading = false
+  loading = false,
+  onIsNewChange
 }: ProductCardProps) {
   const [quantity, setQuantity] = useState(initialQuantity ? String(initialQuantity) : '1');
   const [editPrice, setEditPrice] = useState(price ? String(price) : '');
   const [editName, setEditName] = useState(name === 'Producto Desconocido' ? '' : name);
   const [editRef, setEditRef] = useState(productRef);
   const [notes, setNotes] = useState('');
+  const [unitType, setUnitType] = useState<'unidad' | 'docena' | 'box'>('unidad');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isValidatingRef, setIsValidatingRef] = useState(false);
+  const [isCurrentlyNew, setIsCurrentlyNew] = useState(isNewProduct);
 
   const handleAddToCart = async () => {
     const qty = parseInt(quantity, 10);
@@ -43,9 +48,24 @@ export default function ProductCard({
 
     setIsSubmitting(true);
     try {
-      await onAddToCart(qty, finalPrice, finalName, finalRef, notes.trim() || undefined);
+      // Guardar automáticamente en inventario si es producto nuevo (sin requerir imagen)
+      if (isNewProduct) {
+        try {
+          const formData = new FormData();
+          formData.append('ref', finalRef);
+          formData.append('name', finalName);
+          formData.append('price', String(finalPrice));
+          await fetch('/api/products', { method: 'POST', body: formData });
+        } catch (err) {
+          // Silencioso — el producto se agregará al pedido aunque falle el inventario
+          console.warn('No se pudo guardar en inventario:', err);
+        }
+      }
+
+      await onAddToCart(qty, finalPrice, finalName, finalRef, notes.trim() || undefined, unitType);
       setQuantity('1');
       setNotes('');
+      setUnitType('unidad');
     } finally {
       setIsSubmitting(false);
     }
@@ -54,6 +74,29 @@ export default function ProductCard({
   const subtotal = editPrice && quantity
     ? (parseInt(editPrice, 10) || 0) * (parseInt(quantity, 10) || 0)
     : 0;
+
+  const validateRefInInventory = async () => {
+    const refToCheck = editRef.trim().toUpperCase();
+    if (!refToCheck || refToCheck.length < 1) return;
+
+    setIsValidatingRef(true);
+    try {
+      const res = await fetch(`/api/inventory?q=${encodeURIComponent(refToCheck)}`);
+      const data = await res.json();
+      const found = data.products?.some((p: any) => p.ref === refToCheck);
+
+      const newIsNew = !found;
+      setIsCurrentlyNew(newIsNew);
+      onIsNewChange?.(newIsNew);
+    } catch (err) {
+      console.warn('Error validating ref:', err);
+      // En caso de error, asumir que no existe (es nuevo)
+      setIsCurrentlyNew(true);
+      onIsNewChange?.(true);
+    } finally {
+      setIsValidatingRef(false);
+    }
+  };
 
   return (
     <div className="bg-white rounded-xl shadow-md overflow-hidden border border-gray-200 w-full max-w-sm">
@@ -89,11 +132,14 @@ export default function ProductCard({
               type="text"
               value={editRef}
               onChange={e => setEditRef(e.target.value.toUpperCase())}
+              onBlur={validateRefInInventory}
               placeholder="Ej: MASC-001"
               className="w-full px-3 py-1.5 border-2 border-orange-300 bg-orange-50 rounded-lg text-sm font-mono font-bold focus:outline-none focus:ring-2 focus:ring-orange-400 uppercase"
-              disabled={loading || isSubmitting}
+              disabled={loading || isSubmitting || isValidatingRef}
             />
-            <p className="text-[10px] text-orange-500 mt-0.5">Al agregar, este producto se guardará en inventario</p>
+            <p className="text-[10px] text-orange-500 mt-0.5">
+              {isValidatingRef ? '⏳ Validando...' : '✅ Al agregar, se guardará en inventario automáticamente'}
+            </p>
           </div>
         )}
 
@@ -125,8 +171,8 @@ export default function ProductCard({
           />
         </div>
 
-        {/* Precio + Cantidad */}
-        <div className="grid grid-cols-2 gap-2">
+        {/* Precio + Cantidad + Unidad */}
+        <div className="grid grid-cols-3 gap-2">
           <div>
             <label className="text-xs text-gray-500 font-medium block mb-0.5">Precio (COP)</label>
             <div className="flex items-center border border-gray-300 rounded-lg focus-within:ring-2 focus-within:ring-[#00a884] overflow-hidden">
@@ -161,6 +207,19 @@ export default function ProductCard({
               }`}
               disabled={loading || isSubmitting}
             />
+          </div>
+          <div>
+            <label className="text-xs text-gray-500 font-medium block mb-0.5">Unidad</label>
+            <select
+              value={unitType}
+              onChange={e => setUnitType(e.target.value as 'unidad' | 'docena' | 'box')}
+              className="w-full px-3 py-1.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#00a884] bg-white"
+              disabled={loading || isSubmitting}
+            >
+              <option value="unidad">Unidad</option>
+              <option value="docena">Docena</option>
+              <option value="box">Box</option>
+            </select>
           </div>
         </div>
 

@@ -21,7 +21,7 @@ export async function GET(
         delivery_address,
         notes,
         customers (name, email, phone, local_name, city, neighborhood, address),
-        order_items (product_ref, product_name, quantity, price_at_time)
+        order_items (product_ref, product_name, quantity, unit_type, price_at_time)
       `)
       .eq('id', orderId)
       .single();
@@ -55,9 +55,10 @@ export async function GET(
 
     const items = rawItems.map((oi) => ({
       ref: oi.product_ref,
-      name: inventarioMap[oi.product_ref] || oi.product_name || oi.product_ref,
+      name: oi.product_name || inventarioMap[oi.product_ref] || oi.product_ref,
       quantity: oi.quantity,
       price: oi.price_at_time,
+      unit_type: oi.unit_type || 'unidad',
     }));
 
     // ── PDF ────────────────────────────────────────────────────────────────────
@@ -216,6 +217,7 @@ export async function GET(
         item.ref,
         item.name,
         item.quantity,
+        item.unit_type || 'unidad',
         item.price ? `$${(item.price).toLocaleString('es-CO')}` : '-',
         `$${subtotal.toLocaleString('es-CO')}`,
       ];
@@ -232,7 +234,7 @@ export async function GET(
 
     autoTable(doc, {
       startY: y,
-      head: [['REF', 'Producto', 'Cant.', 'Precio Unit.', 'Subtotal']],
+      head: [['REF', 'Producto', 'Cant.', 'Unidad', 'Precio Unit.', 'Subtotal']],
       body: productBody,
       theme: 'grid',
       styles: { fontSize: 8, cellPadding: 2.5, overflow: 'linebreak' },
@@ -246,8 +248,9 @@ export async function GET(
         0: { cellWidth: 28, halign: 'center' },
         1: { cellWidth: 'auto' },
         2: { cellWidth: 16, halign: 'center' },
-        3: { cellWidth: 32, halign: 'right' },
-        4: { cellWidth: 32, halign: 'right' },
+        3: { cellWidth: 22, halign: 'center' },
+        4: { cellWidth: 28, halign: 'right' },
+        5: { cellWidth: 28, halign: 'right' },
       },
       alternateRowStyles: { fillColor: [248, 252, 250] },
       margin: { left: margin, right: margin },

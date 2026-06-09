@@ -8,6 +8,7 @@ interface OrderItem {
   name: string;
   quantity: number;
   price?: number;
+  unit_type?: 'unidad' | 'docena' | 'box';
 }
 
 interface OrderPayload {
@@ -42,6 +43,7 @@ export async function GET() {
           product_ref,
           product_name,
           quantity,
+          unit_type,
           price_at_time
         )
       `)
@@ -66,6 +68,7 @@ export async function GET() {
         ref: oi.product_ref,
         name: oi.product_name || oi.product_ref,
         quantity: oi.quantity,
+        unit_type: oi.unit_type || 'unidad',
         price: oi.price_at_time
       })),
       status: o.status,
@@ -151,6 +154,7 @@ export async function POST(req: Request) {
       product_ref: item.ref,
       product_name: item.name,          // ← nombre real del inventario
       quantity: item.quantity,
+      unit_type: item.unit_type || 'unidad',
       price_at_time: item.price || 0
     }));
 
