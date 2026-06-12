@@ -47,22 +47,25 @@ export async function POST(req: Request) {
     };
     if (imageUrl) row['image_url'] = imageUrl;
 
-    // ¿Ya existe la referencia?
+    // Identidad = Referencia + Descripción (Producto).
+    // Se permiten referencias repetidas con descripciones distintas (cada una es una fila).
+    // Solo se actualiza cuando coinciden referencia Y descripción exactas.
     const { data: existing } = await supabase
       .from('INVENTARIO EL PUNTAZO')
-      .select('Referencia')
+      .select('id_producto')
       .eq('Referencia', ref)
+      .eq('Producto', name)
       .limit(1)
       .maybeSingle();
 
     const writeRow = async (r: Record<string, unknown>) => {
       if (existing) {
-        // No reescribimos la referencia (es la clave de filtro)
-        const { Referencia, ...updateFields } = r;
+        // Actualiza solo esa fila por su id_producto (no toca otras filas con misma ref)
+        const { Referencia, Producto, ...updateFields } = r;
         return supabase
           .from('INVENTARIO EL PUNTAZO')
           .update(updateFields)
-          .eq('Referencia', ref);
+          .eq('id_producto', existing.id_producto as number);
       }
       // id_producto es NOT NULL sin default → calcular el siguiente manualmente
       const { data: maxRow } = await supabase
