@@ -38,7 +38,8 @@ export async function POST(req: Request) {
       }
     }
 
-    // Guardar en inventario — upsert por referencia
+    // Guardar en inventario — la tabla no tiene constraint UNIQUE en Referencia,
+    // así que no se puede usar upsert(onConflict). Hacemos select -> update/insert manual.
     const row: Record<string, unknown> = {
       Referencia: ref,
       Producto: name,
@@ -46,20 +47,46 @@ export async function POST(req: Request) {
     };
     if (imageUrl) row['image_url'] = imageUrl;
 
-    const { error: insertErr } = await supabase
+    // ¿Ya existe la referencia?
+    const { data: existing } = await supabase
       .from('INVENTARIO EL PUNTAZO')
-      .upsert([row], { onConflict: 'Referencia' });
+      .select('Referencia')
+      .eq('Referencia', ref)
+      .limit(1)
+      .maybeSingle();
 
-    if (insertErr) {
-      // Si falla por columna image_url inexistente, reintentar sin ella
-      if (insertErr.message?.includes('image_url') || insertErr.code === '42703') {
-        delete row['image_url'];
-        const { error: retryErr } = await supabase
+    const writeRow = async (r: Record<string, unknown>) => {
+      if (existing) {
+        // No reescribimos la referencia (es la clave de filtro)
+        const { Referencia, ...updateFields } = r;
+        return supabase
           .from('INVENTARIO EL PUNTAZO')
-          .upsert([row], { onConflict: 'Referencia' });
+          .update(updateFields)
+          .eq('Referencia', ref);
+      }
+      // id_producto es NOT NULL sin default → calcular el siguiente manualmente
+      const { data: maxRow } = await supabase
+        .from('INVENTARIO EL PUNTAZO')
+        .select('id_producto')
+        .order('id_producto', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      const nextId = ((maxRow?.id_producto as number | null) ?? 0) + 1;
+      return supabase
+        .from('INVENTARIO EL PUNTAZO')
+        .insert([{ id_producto: nextId, ...r }]);
+    };
+
+    const { error: writeErr } = await writeRow(row);
+
+    if (writeErr) {
+      // Si falla por columna image_url inexistente, reintentar sin ella
+      if (writeErr.message?.includes('image_url') || writeErr.code === '42703') {
+        delete row['image_url'];
+        const { error: retryErr } = await writeRow(row);
         if (retryErr) throw retryErr;
       } else {
-        throw insertErr;
+        throw writeErr;
       }
     }
 
