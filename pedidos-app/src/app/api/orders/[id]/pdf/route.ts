@@ -226,9 +226,15 @@ export async function GET(
       ];
     });
 
+    // Renglón vacío entre la lista y el total
+    productBody.push([
+      { content: '', colSpan: 6, styles: { fillColor: [255, 255, 255], minCellHeight: 6 } } as any,
+    ]);
+
     // Fila de total
     productBody.push([
-      '', '', '', { content: 'TOTAL', styles: { fontStyle: 'bold' } } as any,
+      '', '', '', '',
+      { content: 'TOTAL', styles: { fontStyle: 'bold', halign: 'right' } } as any,
       {
         content: `$${(raw.total || 0).toLocaleString('es-CO')}`,
         styles: { fontStyle: 'bold', textColor: [0, 100, 80] },

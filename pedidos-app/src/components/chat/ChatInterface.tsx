@@ -864,9 +864,11 @@ export default function ChatInterface() {
           notes: orderNotes?.trim() || undefined,
           items: orderItems.map(i => ({
             ref: i.ref,
-            name: i.notes ? `${i.name} (${i.notes})` : i.name,
+            name: i.name,
             quantity: i.quantity,
             price: i.price,
+            unit_type: i.unit_type || 'unidad',
+            notes: i.notes || undefined,
           })),
           status: 'Pendiente',
           date: new Date().toLocaleDateString('es-ES'),

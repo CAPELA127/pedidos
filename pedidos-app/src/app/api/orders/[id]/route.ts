@@ -13,6 +13,8 @@ interface OrderItemUpdate {
   name: string;
   quantity: number;
   price?: number;
+  unit_type?: string;
+  notes?: string;
 }
 
 export async function PUT(
@@ -76,13 +78,13 @@ export async function PUT(
       if (existing) {
         const { error: updErr } = await getSupabase()
           .from('order_items')
-          .update({ quantity: item.quantity, price_at_time: item.price || 0, product_name: item.name })
+          .update({ quantity: item.quantity, price_at_time: item.price || 0, product_name: item.name, unit_type: item.unit_type || 'unidad', notes: item.notes || null })
           .eq('id', existing.id);
         if (updErr) throw updErr;
       } else {
         const { error: insErr } = await getSupabase()
           .from('order_items')
-          .insert({ order_id: orderId, product_ref: item.ref, product_name: item.name, quantity: item.quantity, price_at_time: item.price || 0 });
+          .insert({ order_id: orderId, product_ref: item.ref, product_name: item.name, quantity: item.quantity, price_at_time: item.price || 0, unit_type: item.unit_type || 'unidad', notes: item.notes || null });
         if (insErr) throw insErr;
       }
     }

@@ -8,6 +8,8 @@ interface OrderItem {
   name: string;
   quantity: number;
   price?: number;
+  unit_type?: string;
+  notes?: string;
 }
 
 interface Order {
