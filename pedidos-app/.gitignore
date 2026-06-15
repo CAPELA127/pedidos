@@ -43,3 +43,6 @@ next-env.d.ts
 node_modules/
 
 .vercel
+
+# backups de migracion (datos grandes)
+scripts/backup-*.json
