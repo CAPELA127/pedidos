@@ -1,7 +1,8 @@
 "use client";
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Search, Download, CheckCircle, Package, Truck, RefreshCw, X, Edit2, Save, LayoutGrid, Plus } from 'lucide-react';
+import { Search, Download, CheckCircle, Package, Truck, RefreshCw, X, Edit2, Save, LayoutGrid, Plus, Camera } from 'lucide-react';
+import RemissionModal from './RemissionModal';
 
 interface OrderItem {
   ref: string;
@@ -38,6 +39,7 @@ export default function Dashboard() {
   const [editingItems, setEditingItems] = useState<OrderItem[]>([]);
   const [isEditing, setIsEditing] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [remissionOrder, setRemissionOrder] = useState<Order | null>(null);
 
   // ── Agregar producto nuevo al pedido ──
   const [newRef, setNewRef] = useState('');
@@ -695,6 +697,12 @@ export default function Dashboard() {
                 >
                   <Download size={14} /> Descargar PDF
                 </button>
+                <button
+                  onClick={() => setRemissionOrder(selectedOrder)}
+                  className="px-4 py-2 bg-blue-50 text-blue-600 border border-blue-200 rounded-lg text-sm font-medium hover:bg-blue-100 flex items-center gap-1.5"
+                >
+                  <Camera size={14} /> Crear remisión
+                </button>
                 <button onClick={closeModal} className="px-4 py-2 border rounded-lg text-gray-700 text-sm font-medium hover:bg-gray-50">
                   Cerrar
                 </button>
@@ -726,6 +734,18 @@ export default function Dashboard() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Modal remisión de empaque */}
+      {remissionOrder && (
+        <RemissionModal
+          orderId={remissionOrder.id}
+          customerName={remissionOrder.customer}
+          onClose={() => setRemissionOrder(null)}
+          onSaved={() => {
+            setOrders(prev => prev.map(o => o.id === remissionOrder.id ? { ...o, status: 'Empacado' } : o));
+          }}
+        />
       )}
     </div>
   );
