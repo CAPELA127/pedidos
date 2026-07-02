@@ -40,6 +40,7 @@ export default function Dashboard() {
   const [isEditing, setIsEditing] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [remissionOrder, setRemissionOrder] = useState<Order | null>(null);
+  const [orderRemissions, setOrderRemissions] = useState<{ id: string; total: number; created_at: string; boxes_count: number | null }[]>([]);
 
   // ── Agregar producto nuevo al pedido ──
   const [newRef, setNewRef] = useState('');
@@ -125,6 +126,12 @@ export default function Dashboard() {
     setSelectedOrder(order);
     setEditingItems([...order.items]);
     setIsEditing(false);
+    // Cargar remisiones existentes del pedido
+    setOrderRemissions([]);
+    fetch(`/api/orders/${order.id}/remission`)
+      .then(res => res.json())
+      .then(data => { if (data.success) setOrderRemissions(data.remissions || []); })
+      .catch(() => {});
   };
 
   const closeModal = () => {
@@ -477,6 +484,36 @@ export default function Dashboard() {
                   </div>
                 )}
               </div>
+
+              {/* Remisiones existentes */}
+              {orderRemissions.length > 0 && (
+                <div className="mt-3 bg-blue-50 border border-blue-200 rounded-lg p-3">
+                  <p className="text-xs font-bold text-blue-700 mb-2 flex items-center gap-1.5">
+                    <Camera size={12} /> Remisiones de este pedido
+                  </p>
+                  <div className="space-y-1.5">
+                    {orderRemissions.map(rem => (
+                      <div key={rem.id} className="flex items-center justify-between gap-2 bg-white rounded-lg px-3 py-2 border border-blue-100">
+                        <div className="min-w-0">
+                          <span className="text-sm font-mono font-bold text-blue-700">{rem.id}</span>
+                          <span className="text-xs text-gray-500 ml-2">
+                            {new Date(rem.created_at).toLocaleDateString('es-CO')}
+                            {rem.boxes_count ? ` · ${rem.boxes_count} cajas` : ''}
+                            {' · '}${(rem.total || 0).toLocaleString('es-CO')}
+                          </span>
+                        </div>
+                        <a
+                          href={`/api/remissions/${rem.id}/pdf`}
+                          download={`remision-${rem.id}.pdf`}
+                          className="flex-shrink-0 text-xs bg-blue-600 text-white px-2.5 py-1.5 rounded-lg hover:bg-blue-700 font-medium inline-flex items-center gap-1"
+                        >
+                          <Download size={11} /> PDF
+                        </a>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Items */}
@@ -744,6 +781,11 @@ export default function Dashboard() {
           onClose={() => setRemissionOrder(null)}
           onSaved={() => {
             setOrders(prev => prev.map(o => o.id === remissionOrder.id ? { ...o, status: 'Empacado' } : o));
+            // Refrescar la lista de remisiones del modal abierto
+            fetch(`/api/orders/${remissionOrder.id}/remission`)
+              .then(res => res.json())
+              .then(data => { if (data.success) setOrderRemissions(data.remissions || []); })
+              .catch(() => {});
           }}
         />
       )}
