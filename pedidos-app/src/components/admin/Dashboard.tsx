@@ -13,6 +13,26 @@ interface OrderItem {
   notes?: string;
 }
 
+interface OrderRemission {
+  id: string;
+  total: number;
+  created_at: string;
+  boxes_count: number | null;
+  discount_percent?: number | null;
+  freight_value?: number | null;
+  returns_value?: number | null;
+  returns_reason?: string | null;
+  liquidated_total?: number | null;
+  liquidated_at?: string | null;
+}
+
+interface LiquidationDraft {
+  discount: string;
+  freight: string;
+  returns: string;
+  reason: string;
+}
+
 interface Order {
   id: string;
   customer: string;
@@ -40,7 +60,9 @@ export default function Dashboard() {
   const [isEditing, setIsEditing] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [remissionOrder, setRemissionOrder] = useState<Order | null>(null);
-  const [orderRemissions, setOrderRemissions] = useState<{ id: string; total: number; created_at: string; boxes_count: number | null }[]>([]);
+  const [orderRemissions, setOrderRemissions] = useState<OrderRemission[]>([]);
+  const [liqDrafts, setLiqDrafts] = useState<Record<string, LiquidationDraft>>({});
+  const [liquidatingId, setLiquidatingId] = useState<string | null>(null);
 
   // ── Agregar producto nuevo al pedido ──
   const [newRef, setNewRef] = useState('');
@@ -122,16 +144,69 @@ export default function Dashboard() {
     }
   };
 
+  const loadOrderRemissions = useCallback((orderId: string) => {
+    fetch(`/api/orders/${orderId}/remission`)
+      .then(res => res.json())
+      .then(data => {
+        if (!data.success) return;
+        const rems: OrderRemission[] = data.remissions || [];
+        setOrderRemissions(rems);
+        // Inicializar borradores de liquidación con los valores guardados
+        setLiqDrafts(Object.fromEntries(rems.map(r => [r.id, {
+          discount: r.discount_percent ? String(r.discount_percent) : '',
+          freight: r.freight_value ? String(r.freight_value) : '',
+          returns: r.returns_value ? String(r.returns_value) : '',
+          reason: r.returns_reason || '',
+        }])));
+      })
+      .catch(() => {});
+  }, []);
+
+  const updateLiqDraft = (remId: string, field: keyof LiquidationDraft, value: string) => {
+    setLiqDrafts(prev => ({
+      ...prev,
+      [remId]: { ...(prev[remId] || { discount: '', freight: '', returns: '', reason: '' }), [field]: value },
+    }));
+  };
+
+  const liquidateRemission = async (remId: string) => {
+    const draft = liqDrafts[remId] || { discount: '', freight: '', returns: '', reason: '' };
+    const returnsValue = parseFloat(draft.returns) || 0;
+    if (returnsValue > 0 && !draft.reason.trim()) {
+      alert('⚠️ Indica el motivo de la devolución o daño.');
+      return;
+    }
+    setLiquidatingId(remId);
+    try {
+      const res = await fetch(`/api/remissions/${remId}/liquidate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          discount_percent: parseInt(draft.discount, 10) || 0,
+          freight_value: parseFloat(draft.freight) || 0,
+          returns_value: returnsValue,
+          returns_reason: draft.reason.trim() || null,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.message || 'Error liquidando remisión');
+      setOrderRemissions(prev => prev.map(r => r.id === remId ? { ...r, ...data.remission } : r));
+    } catch (e) {
+      alert(`❌ ${e instanceof Error ? e.message : 'No se pudo liquidar la remisión.'}`);
+      console.error(e);
+    } finally {
+      setLiquidatingId(null);
+    }
+  };
+
   const openEditModal = (order: Order) => {
     setSelectedOrder(order);
     setEditingItems([...order.items]);
     setIsEditing(false);
     // Cargar remisiones existentes del pedido
     setOrderRemissions([]);
-    fetch(`/api/orders/${order.id}/remission`)
-      .then(res => res.json())
-      .then(data => { if (data.success) setOrderRemissions(data.remissions || []); })
-      .catch(() => {});
+    setLiqDrafts({});
+    loadOrderRemissions(order.id);
   };
 
   const closeModal = () => {
@@ -492,25 +567,123 @@ export default function Dashboard() {
                     <Camera size={12} /> Remisiones de este pedido
                   </p>
                   <div className="space-y-1.5">
-                    {orderRemissions.map(rem => (
-                      <div key={rem.id} className="flex items-center justify-between gap-2 bg-white rounded-lg px-3 py-2 border border-blue-100">
-                        <div className="min-w-0">
-                          <span className="text-sm font-mono font-bold text-blue-700">{rem.id}</span>
-                          <span className="text-xs text-gray-500 ml-2">
-                            {new Date(rem.created_at).toLocaleDateString('es-CO')}
-                            {rem.boxes_count ? ` · ${rem.boxes_count} cajas` : ''}
-                            {' · '}${(rem.total || 0).toLocaleString('es-CO')}
-                          </span>
+                    {orderRemissions.map(rem => {
+                      const draft = liqDrafts[rem.id] || { discount: '', freight: '', returns: '', reason: '' };
+                      const remTotal = rem.total || 0;
+                      const discountPct = parseInt(draft.discount, 10) || 0;
+                      const discountAmount = Math.round(remTotal * discountPct / 100);
+                      const freightValue = parseFloat(draft.freight) || 0;
+                      const returnsValue = parseFloat(draft.returns) || 0;
+                      const liquidatedTotal = remTotal - discountAmount - freightValue - returnsValue;
+                      return (
+                        <div key={rem.id} className="bg-white rounded-lg px-3 py-2 border border-blue-100 space-y-2">
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="min-w-0">
+                              <span className="text-sm font-mono font-bold text-blue-700">{rem.id}</span>
+                              <span className="text-xs text-gray-500 ml-2">
+                                {new Date(rem.created_at).toLocaleDateString('es-CO')}
+                                {rem.boxes_count ? ` · ${rem.boxes_count} cajas` : ''}
+                                {' · '}${remTotal.toLocaleString('es-CO')}
+                              </span>
+                            </div>
+                            <a
+                              href={`/api/remissions/${rem.id}/pdf`}
+                              download={`remision-${rem.id}.pdf`}
+                              className="flex-shrink-0 text-xs bg-blue-600 text-white px-2.5 py-1.5 rounded-lg hover:bg-blue-700 font-medium inline-flex items-center gap-1"
+                            >
+                              <Download size={11} /> PDF
+                            </a>
+                          </div>
+
+                          {/* Liquidación: descuento, flete y devoluciones */}
+                          <div className="border-t border-blue-100 pt-2 space-y-2">
+                            <div className="grid grid-cols-3 gap-2">
+                              <div>
+                                <label className="text-[10px] font-semibold text-gray-600 block mb-0.5">Descuento (%)</label>
+                                <input
+                                  type="number"
+                                  min={0}
+                                  max={100}
+                                  step={1}
+                                  value={draft.discount}
+                                  onChange={e => updateLiqDraft(rem.id, 'discount', e.target.value.replace(/[.,].*$/, ''))}
+                                  placeholder="0"
+                                  className="w-full text-xs border rounded-lg px-2 py-1.5 focus:ring-2 focus:ring-purple-400 focus:border-purple-400 outline-none"
+                                />
+                              </div>
+                              <div>
+                                <label className="text-[10px] font-semibold text-gray-600 block mb-0.5">Valor del flete ($)</label>
+                                <input
+                                  type="number"
+                                  min={0}
+                                  value={draft.freight}
+                                  onChange={e => updateLiqDraft(rem.id, 'freight', e.target.value)}
+                                  placeholder="0"
+                                  className="w-full text-xs border rounded-lg px-2 py-1.5 focus:ring-2 focus:ring-purple-400 focus:border-purple-400 outline-none"
+                                />
+                              </div>
+                              <div>
+                                <label className="text-[10px] font-semibold text-gray-600 block mb-0.5">Devoluciones/daños ($)</label>
+                                <input
+                                  type="number"
+                                  min={0}
+                                  value={draft.returns}
+                                  onChange={e => updateLiqDraft(rem.id, 'returns', e.target.value)}
+                                  placeholder="0"
+                                  className="w-full text-xs border rounded-lg px-2 py-1.5 focus:ring-2 focus:ring-purple-400 focus:border-purple-400 outline-none"
+                                />
+                              </div>
+                            </div>
+                            {returnsValue > 0 && (
+                              <div>
+                                <label className="text-[10px] font-semibold text-gray-600 block mb-0.5">Motivo de la devolución o daño</label>
+                                <input
+                                  type="text"
+                                  value={draft.reason}
+                                  onChange={e => updateLiqDraft(rem.id, 'reason', e.target.value)}
+                                  placeholder="Ej: 2 cajas llegaron averiadas"
+                                  className="w-full text-xs border rounded-lg px-2 py-1.5 focus:ring-2 focus:ring-purple-400 focus:border-purple-400 outline-none"
+                                />
+                              </div>
+                            )}
+                            <div className="flex items-center justify-between gap-2 flex-wrap">
+                              <div className="text-xs text-gray-600">
+                                {(discountPct > 0 || freightValue > 0 || returnsValue > 0) && (
+                                  <span className="mr-2">
+                                    {discountPct > 0 && <span className="mr-2">Desc: -${discountAmount.toLocaleString('es-CO')}</span>}
+                                    {freightValue > 0 && <span className="mr-2">Flete: -${freightValue.toLocaleString('es-CO')}</span>}
+                                    {returnsValue > 0 && <span className="mr-2">Dev/daños: -${returnsValue.toLocaleString('es-CO')}</span>}
+                                  </span>
+                                )}
+                                <span className="font-bold text-purple-700">
+                                  Total liquidado: ${liquidatedTotal.toLocaleString('es-CO')}
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-1.5 flex-shrink-0">
+                                <button
+                                  onClick={() => liquidateRemission(rem.id)}
+                                  disabled={liquidatingId === rem.id}
+                                  className="text-xs bg-purple-600 text-white px-2.5 py-1.5 rounded-lg hover:bg-purple-700 font-medium disabled:opacity-50 inline-flex items-center gap-1"
+                                >
+                                  {liquidatingId === rem.id
+                                    ? 'Guardando...'
+                                    : rem.liquidated_at ? 'Actualizar liquidación' : 'Crear remisión liquidada'}
+                                </button>
+                                {rem.liquidated_at && (
+                                  <a
+                                    href={`/api/remissions/${rem.id}/liquidated-pdf`}
+                                    download={`remision-liquidada-${rem.id}.pdf`}
+                                    className="text-xs bg-purple-100 text-purple-700 border border-purple-300 px-2.5 py-1.5 rounded-lg hover:bg-purple-200 font-medium inline-flex items-center gap-1"
+                                  >
+                                    <Download size={11} /> PDF Liquidada
+                                  </a>
+                                )}
+                              </div>
+                            </div>
+                          </div>
                         </div>
-                        <a
-                          href={`/api/remissions/${rem.id}/pdf`}
-                          download={`remision-${rem.id}.pdf`}
-                          className="flex-shrink-0 text-xs bg-blue-600 text-white px-2.5 py-1.5 rounded-lg hover:bg-blue-700 font-medium inline-flex items-center gap-1"
-                        >
-                          <Download size={11} /> PDF
-                        </a>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 </div>
               )}
@@ -782,10 +955,7 @@ export default function Dashboard() {
           onSaved={() => {
             setOrders(prev => prev.map(o => o.id === remissionOrder.id ? { ...o, status: 'Empacado' } : o));
             // Refrescar la lista de remisiones del modal abierto
-            fetch(`/api/orders/${remissionOrder.id}/remission`)
-              .then(res => res.json())
-              .then(data => { if (data.success) setOrderRemissions(data.remissions || []); })
-              .catch(() => {});
+            loadOrderRemissions(remissionOrder.id);
           }}
         />
       )}
