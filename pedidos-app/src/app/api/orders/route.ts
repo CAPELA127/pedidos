@@ -19,6 +19,11 @@ interface OrderPayload {
   customer_id?: string;
   items: OrderItem[];
   phone?: string;
+  cc_nit?: string;
+  local_name?: string;
+  city?: string;
+  neighborhood?: string;
+  address?: string;
   vendor_name?: string;
   delivery_address?: string;
   notes?: string;
@@ -93,7 +98,7 @@ export async function GET() {
 export async function POST(req: Request) {
   try {
     const payload: OrderPayload = await req.json();
-    const { customer, email, customer_id: providedCustomerId, items, phone, vendor_name, delivery_address, notes } = payload;
+    const { customer, email, customer_id: providedCustomerId, items, phone, cc_nit, local_name, city, neighborhood, address, vendor_name, delivery_address, notes } = payload;
 
     if (!customer || !items || items.length === 0) {
       return NextResponse.json(
@@ -102,11 +107,65 @@ export async function POST(req: Request) {
       );
     }
 
+    // Idempotencia para sincronización offline: si el cliente manda un id y
+    // ese pedido ya existe, es un reintento — responder éxito sin duplicar
+    const clientOrderId = payload.id && /^ORD-[A-Z0-9-]+$/i.test(payload.id) ? payload.id : null;
+    if (clientOrderId) {
+      const { data: existingOrder } = await getSupabase()
+        .from('orders')
+        .select('id, customer_id, total')
+        .eq('id', clientOrderId)
+        .single();
+
+      if (existingOrder) {
+        // Reintento tras fallo parcial: si la orden quedó sin items, completarlos
+        const { count } = await getSupabase()
+          .from('order_items')
+          .select('id', { count: 'exact', head: true })
+          .eq('order_id', existingOrder.id);
+
+        if (!count) {
+          const { error: repairErr } = await getSupabase().from('order_items').insert(
+            items.map(item => ({
+              order_id: existingOrder.id,
+              product_ref: item.ref,
+              product_name: item.name,
+              quantity: item.quantity,
+              unit_type: item.unit_type || 'unidad',
+              notes: item.notes || null,
+              price_at_time: item.price || 0
+            }))
+          );
+          if (repairErr) throw repairErr;
+        }
+
+        return NextResponse.json({
+          success: true,
+          alreadyExists: true,
+          order: {
+            id: existingOrder.id, customer, email, customer_id: existingOrder.customer_id,
+            items, status: 'Pendiente', total: existingOrder.total,
+            date: new Date().toLocaleDateString('es-CO'),
+            total_items: items.reduce((s, i) => s + i.quantity, 0)
+          },
+          message: `Pedido ${existingOrder.id} ya estaba guardado`
+        });
+      }
+    }
+
     // Buscar o crear cliente
     let customerId = providedCustomerId;
     if (!customerId) {
       let existing = null;
-      if (email) {
+      if (cc_nit) {
+        const { data } = await getSupabase()
+          .from('customers')
+          .select('id')
+          .eq('cc_nit', cc_nit)
+          .single();
+        existing = data;
+      }
+      if (!existing && email) {
         const { data } = await getSupabase()
           .from('customers')
           .select('id')
@@ -118,9 +177,19 @@ export async function POST(req: Request) {
       if (existing) {
         customerId = existing.id;
       } else {
+        // Cliente capturado offline: viene embebido en el pedido con todos sus datos
         const { data: created, error: createErr } = await getSupabase()
           .from('customers')
-          .insert([{ name: customer, email: email || null, phone: phone || null }])
+          .insert([{
+            name: customer,
+            email: email || null,
+            phone: phone || null,
+            cc_nit: cc_nit || null,
+            local_name: local_name || null,
+            city: city || null,
+            neighborhood: neighborhood || null,
+            address: address || null,
+          }])
           .select('id')
           .single();
         if (createErr) throw createErr;
@@ -128,7 +197,7 @@ export async function POST(req: Request) {
       }
     }
 
-    const orderId = `ORD-${Math.floor(1000 + Math.random() * 9000)}`;
+    const orderId = clientOrderId || `ORD-${Math.floor(1000 + Math.random() * 9000)}`;
     const total = items.reduce((sum, item) => sum + (item.price || 0) * item.quantity, 0);
 
     // Crear orden

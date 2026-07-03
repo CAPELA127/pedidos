@@ -66,6 +66,21 @@ export async function POST(
       );
     }
 
+    // Regla de negocio: ningún producto empacado puede quedar sin precio.
+    // Solo se permite sin precio si está agotado del todo (empacado = 0).
+    const missingPrice = payload.items.find(
+      i => (i.packed_quantity || 0) > 0 && (!i.price || i.price <= 0)
+    );
+    if (missingPrice) {
+      return NextResponse.json(
+        {
+          success: false,
+          message: `El producto "${missingPrice.name || missingPrice.ref}" no tiene precio. Ponle precio o márcalo como agotado (empacado = 0).`,
+        },
+        { status: 400 }
+      );
+    }
+
     const remissionId = `REM-${Math.floor(1000 + Math.random() * 9000)}`;
     const total = payload.items.reduce(
       (sum, i) => sum + (i.price || 0) * (i.packed_quantity || 0), 0

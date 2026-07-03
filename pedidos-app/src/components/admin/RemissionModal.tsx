@@ -137,6 +137,12 @@ export default function RemissionModal({ orderId, customerName, onClose, onSaved
   const save = async () => {
     const invalid = items.find(i => i.status === 'agregado' && !i.ref.trim());
     if (invalid) { setError('Hay un producto agregado sin referencia'); return; }
+    // Ningún producto empacado puede ir sin precio — solo si está agotado (empacado = 0)
+    const missingPrice = items.find(i => (i.packed_quantity || 0) > 0 && (!i.price || i.price <= 0));
+    if (missingPrice) {
+      setError(`"${missingPrice.name || missingPrice.ref}" no tiene precio. Ponle precio o márcalo como agotado (empacado = 0).`);
+      return;
+    }
     setIsSaving(true);
     setError(null);
     try {
@@ -323,17 +329,22 @@ export default function RemissionModal({ orderId, customerName, onClose, onSaved
                         />
                         <span>{item.unit_type}</span>
                       </div>
-                      {item.status === 'agregado' && (
-                        <div className="flex items-center gap-1 text-xs text-gray-500">
-                          $
-                          <input
-                            type="number" min="0"
-                            value={item.price || ''}
-                            onChange={e => updateItem(i, { price: parseFloat(e.target.value) || 0 })}
-                            placeholder="Precio"
-                            className="w-20 px-2 py-1 border rounded bg-white"
-                          />
-                        </div>
+                      <div className="flex items-center gap-1 text-xs text-gray-500">
+                        $
+                        <input
+                          type="number" min="0"
+                          value={item.price || ''}
+                          onChange={e => updateItem(i, { price: parseFloat(e.target.value) || 0 })}
+                          placeholder="Precio"
+                          className={`w-20 px-2 py-1 border rounded bg-white ${
+                            (item.packed_quantity || 0) > 0 && (!item.price || item.price <= 0)
+                              ? 'border-red-400 ring-1 ring-red-300'
+                              : ''
+                          }`}
+                        />
+                      </div>
+                      {(item.packed_quantity || 0) > 0 && (!item.price || item.price <= 0) && (
+                        <span className="text-[10px] font-bold text-red-500">⚠️ Sin precio</span>
                       )}
                       <div className="ml-auto text-xs font-bold text-gray-700">
                         ${((item.price || 0) * (item.packed_quantity || 0)).toLocaleString('es-CO')}

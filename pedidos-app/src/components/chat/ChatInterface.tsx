@@ -4,6 +4,8 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Send, Check, MoreVertical, Phone, ShoppingCart, Search, UserPlus, X, Camera, Upload } from 'lucide-react';
 import ProductCard from '../ProductCard';
 import { normalizeAddress, validatePhoneNumber } from '@/lib/normalize-address';
+import { saveDraft, loadDraft, clearDraft } from '@/lib/order-draft';
+import { getPendingOrders, enqueueOrder, syncPendingOrders, cacheInventory, findCachedProduct } from '@/lib/offline-queue';
 
 interface OrderItem {
   itemId: string;
@@ -14,6 +16,26 @@ interface OrderItem {
   notes?: string;
   unit_type?: 'unidad' | 'docena' | 'box';
 }
+
+// Ids de mensaje únicos aun cuando se crean varios en el mismo milisegundo
+let messageSeq = 0;
+const nextMessageId = () => `${Date.now()}_${messageSeq++}`;
+
+// Número que recibe la alerta de pedidos nuevos por WhatsApp (link wa.me, sin API)
+const WHATSAPP_NOTIFY_NUMBER = process.env.NEXT_PUBLIC_WHATSAPP_NOTIFY_NUMBER || '573183978679';
+
+const buildWhatsAppNotifyUrl = (order: { id: string; customer: string; vendor: string; total: number; items: OrderItem[] }) => {
+  const totalUnits = order.items.reduce((s, i) => s + i.quantity, 0);
+  const origin = typeof window !== 'undefined' ? window.location.origin : '';
+  const pdfLine = origin.startsWith('https://') ? `\n📄 PDF: ${origin}/api/orders/${order.id}/pdf` : '';
+  const text =
+    `🛒 *Nuevo pedido*\n\n` +
+    `${order.vendor || 'Un vendedor'} acaba de generar el pedido *${order.id}*\n` +
+    `👤 Cliente: ${order.customer}\n` +
+    `📦 ${totalUnits} ${totalUnits === 1 ? 'unidad' : 'unidades'} · Total: COP $${(order.total || 0).toLocaleString('es-CO')}` +
+    pdfLine;
+  return `https://wa.me/${WHATSAPP_NOTIFY_NUMBER}?text=${encodeURIComponent(text)}`;
+};
 
 interface Message {
   id: string;
@@ -64,6 +86,15 @@ interface CustomerData {
   id?: string;
 }
 
+// Forma del borrador persistido en localStorage (los timestamps van como ISO string)
+interface OrderDraftData {
+  conversationState: ConversationState;
+  vendorName: string;
+  customerData: CustomerData;
+  orderItems: OrderItem[];
+  messages: Array<Omit<Message, 'timestamp'> & { timestamp: string }>;
+}
+
 interface CustomerSearchResult {
   id: string;
   name: string;
@@ -112,25 +143,73 @@ export default function ChatInterface() {
     total: number;
     deliveryAddress?: string;
     notes?: string;
+    pendingSync?: boolean;
   } | null>(null);
   const [showCartDrawer, setShowCartDrawer] = useState(false);
   const [isDraggingOver, setIsDraggingOver] = useState(false);
+  const [isOnline, setIsOnline] = useState(true);
+  const [pendingCount, setPendingCount] = useState(0);
+  const [showDraftBanner, setShowDraftBanner] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const searchRef = useRef<HTMLDivElement>(null);
+  const draftLoadedRef = useRef(false);
+  const syncingRef = useRef(false);
+  const runSyncRef = useRef<() => void>(() => {});
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
+  // Al montar: restaurar borrador si había un pedido en curso
   useEffect(() => {
-    setMessages([{
-      id: '1',
-      type: 'bot',
-      content: '¡Hola! 👋 ¿Cuál es tu nombre? (vendedor)',
-      timestamp: new Date()
-    }]);
+    const draft = loadDraft<OrderDraftData>();
+    const d = draft?.data;
+    const hasProgress = !!d && d.conversationState !== 'completed' &&
+      (d.vendorName !== '' || d.orderItems.length > 0 || d.conversationState !== 'awaiting_vendor');
+
+    if (d && hasProgress) {
+      setMessages(d.messages.map(m => ({ ...m, timestamp: new Date(m.timestamp) })));
+      setOrderItems(d.orderItems);
+      setConversationState(d.conversationState);
+      setVendorName(d.vendorName);
+      setCustomerData(d.customerData);
+      setShowDraftBanner(true);
+    } else {
+      setMessages([{
+        id: '1',
+        type: 'bot',
+        content: '¡Hola! 👋 ¿Cuál es tu nombre? (vendedor)',
+        timestamp: new Date()
+      }]);
+    }
+    draftLoadedRef.current = true;
   }, []);
+
+  // Autoguardado del borrador — sobrevive recargas y cierres de página
+  useEffect(() => {
+    if (!draftLoadedRef.current) return;
+    if (conversationState === 'completed') return;
+    const t = setTimeout(() => {
+      saveDraft<OrderDraftData>({
+        conversationState,
+        vendorName,
+        customerData,
+        orderItems,
+        messages: messages.slice(-80).map(m => {
+          // Las URLs blob: no sobreviven una recarga — reemplazar por texto
+          const isBlob = m.imageUrl?.startsWith('blob:');
+          return {
+            ...m,
+            imageUrl: isBlob ? undefined : m.imageUrl,
+            content: m.content || (isBlob ? '📷 Imagen' : undefined),
+            timestamp: m.timestamp.toISOString(),
+          };
+        }),
+      });
+    }, 300);
+    return () => clearTimeout(t);
+  }, [messages, orderItems, conversationState, vendorName, customerData]);
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -141,6 +220,85 @@ export default function ChatInterface() {
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
+
+  // Sube los pedidos que quedaron en cola por falta de conexión
+  const runSync = async () => {
+    if (syncingRef.current) return;
+    if (getPendingOrders().length === 0) {
+      setPendingCount(0);
+      return;
+    }
+    syncingRef.current = true;
+    try {
+      const result = await syncPendingOrders();
+      setPendingCount(getPendingOrders().length);
+      if (result.synced.length > 0) {
+        setMessages(prev => [...prev, {
+          id: nextMessageId(),
+          type: 'system',
+          content: `☁️ ${result.synced.length === 1 ? 'Pedido sincronizado' : `${result.synced.length} pedidos sincronizados`} con la nube: ${result.synced.map(s => s.orderId).join(', ')}`,
+          timestamp: new Date()
+        }]);
+      }
+      if (result.failed.length > 0) {
+        setMessages(prev => [...prev, {
+          id: nextMessageId(),
+          type: 'system',
+          content: `⚠️ ${result.failed.length} pedido(s) no se pudieron sincronizar (${result.failed[0].error}). Se reintentará automáticamente.`,
+          timestamp: new Date()
+        }]);
+      }
+    } finally {
+      syncingRef.current = false;
+    }
+  };
+  runSyncRef.current = runSync;
+
+  // Detección de conexión + sincronización automática al reconectar
+  useEffect(() => {
+    setIsOnline(navigator.onLine);
+    setPendingCount(getPendingOrders().length);
+
+    const goOnline = () => {
+      setIsOnline(true);
+      setMessages(prev => [...prev, {
+        id: nextMessageId(),
+        type: 'system',
+        content: '✅ Conexión restablecida',
+        timestamp: new Date()
+      }]);
+      runSyncRef.current();
+    };
+    const goOffline = () => {
+      setIsOnline(false);
+      setMessages(prev => [...prev, {
+        id: nextMessageId(),
+        type: 'system',
+        content: '📴 Sin conexión — puedes seguir tomando el pedido, se guardará en este dispositivo',
+        timestamp: new Date()
+      }]);
+    };
+
+    window.addEventListener('online', goOnline);
+    window.addEventListener('offline', goOffline);
+    if (navigator.onLine) runSyncRef.current();
+
+    return () => {
+      window.removeEventListener('online', goOnline);
+      window.removeEventListener('offline', goOffline);
+    };
+  }, []);
+
+  // Descargar inventario al caché local para buscar referencias sin conexión
+  useEffect(() => {
+    if (!isOnline) return;
+    fetch('/api/inventory?all=1')
+      .then(res => res.json())
+      .then(data => {
+        if (Array.isArray(data.products) && data.products.length > 0) cacheInventory(data.products);
+      })
+      .catch(() => { /* sin red — se usará el último caché guardado */ });
+  }, [isOnline]);
 
   const handleSearchInput = (e: React.ChangeEvent<HTMLInputElement>) => {
     const value = e.target.value;
@@ -210,7 +368,7 @@ export default function ChatInterface() {
     ].filter(l => l !== null).join('\n');
 
     setMessages(prev => [...prev, {
-      id: Date.now().toString(),
+      id: nextMessageId(),
       type: 'bot',
       content: lines,
       timestamp: new Date()
@@ -223,7 +381,7 @@ export default function ChatInterface() {
     setShowDropdown(false);
     setSearchQuery('');
     setMessages(prev => [...prev, {
-      id: Date.now().toString(),
+      id: nextMessageId(),
       type: 'bot',
       content: '¿Tipo de identificación? (CC, NIT, CE, Pasaporte)',
       timestamp: new Date()
@@ -271,7 +429,7 @@ export default function ChatInterface() {
     const url = URL.createObjectURL(compressedFile);
 
     setMessages(prev => [...prev, {
-      id: Date.now().toString(),
+      id: nextMessageId(),
       type: 'user',
       imageUrl: url,
       timestamp: new Date()
@@ -312,7 +470,7 @@ export default function ChatInterface() {
 
         const quantityLabel = quantity ? ` · ${quantity} und` : '';
         setMessages(prev => [...prev, {
-          id: Date.now().toString(),
+          id: nextMessageId(),
           type: 'bot',
           content: notInInventory
             ? `✨ Producto detectado (${ref})${quantityLabel} ${timeLabel}\n⚠️ No en inventario - puedes agregarlo igualmente`
@@ -326,7 +484,7 @@ export default function ChatInterface() {
         // Si el servidor devolvió un error de API (no de imagen), mostrar mensaje distinto
         const isApiError = !res.ok || (data.error && !data.error.includes('referencia'));
         setMessages(prev => [...prev, {
-          id: Date.now().toString(),
+          id: nextMessageId(),
           type: 'bot',
           content: isApiError
             ? '❌ Error al procesar la imagen. Por favor intenta de nuevo.'
@@ -340,7 +498,7 @@ export default function ChatInterface() {
         ? (error.name === 'AbortError' ? 'El OCR tardó demasiado. Asegúrate que la imagen sea clara.' : error.message)
         : 'Error procesando imagen';
       setMessages(prev => [...prev, {
-        id: Date.now().toString(),
+        id: nextMessageId(),
         type: 'bot',
         content: `❌ ${errorMessage}`,
         timestamp: new Date()
@@ -359,15 +517,28 @@ export default function ChatInterface() {
     // Si el usuario escribe una referencia sin espacios (ej: PTZ033, R1998), abrir ProductCard directamente
     if (conversationState === 'ready' && !activeProduct && /^[A-Z0-9\-]{3,20}$/i.test(inputText.trim())) {
       const refInput = inputText.trim().toUpperCase();
-      setMessages(prev => [...prev, { id: Date.now().toString(), type: 'user', content: refInput, timestamp: new Date() }]);
+      setMessages(prev => [...prev, { id: nextMessageId(), type: 'user', content: refInput, timestamp: new Date() }]);
       setInputText('');
 
-      // Buscar en inventario
+      // Buscar en inventario (con respaldo en caché local si no hay conexión)
       setIsProcessing(true);
       try {
-        const res = await fetch(`/api/inventory?q=${encodeURIComponent(refInput)}`);
-        const data = await res.json();
-        const found = data.products?.find((p: any) => p.ref === refInput);
+        let found: { ref: string; name: string; price?: number | null } | null = null;
+        let fromCache = false;
+
+        if (navigator.onLine) {
+          try {
+            const res = await fetch(`/api/inventory?q=${encodeURIComponent(refInput)}`);
+            const data = await res.json();
+            found = data.products?.find((p: { ref: string }) => p.ref === refInput) || null;
+          } catch {
+            found = findCachedProduct(refInput);
+            fromCache = true;
+          }
+        } else {
+          found = findCachedProduct(refInput);
+          fromCache = true;
+        }
 
         if (found) {
           // Producto existe en inventario
@@ -375,13 +546,13 @@ export default function ChatInterface() {
             imageUrl: 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22%3E%3Crect fill=%22%23f0f0f0%22 width=%22100%22 height=%22100%22/%3E%3Ctext x=%2250%22 y=%2250%22 font-size=%2224%22 fill=%22%23999%22 text-anchor=%22middle%22 dominant-baseline=%22middle%22%3E📦%3C/text%3E%3C/svg%3E',
             ref: found.ref,
             name: found.name,
-            price: found.price,
+            price: found.price ?? undefined,
             isNew: false
           });
           setMessages(prev => [...prev, {
-            id: Date.now().toString(),
+            id: nextMessageId(),
             type: 'bot',
-            content: `✅ ${found.name} (${found.ref}) - COP $${found.price?.toLocaleString('es-CO') || 'N/A'}`,
+            content: `✅ ${found.name} (${found.ref}) - COP $${found.price?.toLocaleString('es-CO') || 'N/A'}${fromCache ? ' · 📴 caché local' : ''}`,
             timestamp: new Date()
           }]);
         } else {
@@ -393,16 +564,16 @@ export default function ChatInterface() {
             isNew: true
           });
           setMessages(prev => [...prev, {
-            id: Date.now().toString(),
+            id: nextMessageId(),
             type: 'bot',
-            content: `⚠️ ${refInput} no está en inventario. Ingresa el nombre y precio.`,
+            content: `⚠️ ${refInput} no está en inventario${fromCache ? ' local (sin conexión)' : ''}. Ingresa el nombre y precio.`,
             timestamp: new Date()
           }]);
         }
       } catch (err) {
         console.error('Error buscando referencia:', err);
         setMessages(prev => [...prev, {
-          id: Date.now().toString(),
+          id: nextMessageId(),
           type: 'bot',
           content: '❌ Error buscando referencia. Intenta de nuevo.',
           timestamp: new Date()
@@ -417,8 +588,8 @@ export default function ChatInterface() {
     if (conversationState === 'awaiting_vendor') {
       const name = inputText.trim();
       setMessages(prev => [...prev,
-        { id: Date.now().toString(), type: 'user', content: name, timestamp: new Date() },
-        { id: (Date.now() + 1).toString(), type: 'bot', content: `¡Listo, ${name}! 👍 Ahora busca el cliente por NIT/CC o nombre, o regístralo como nuevo.`, timestamp: new Date() }
+        { id: nextMessageId(), type: 'user', content: name, timestamp: new Date() },
+        { id: nextMessageId(), type: 'bot', content: `¡Listo, ${name}! 👍 Ahora busca el cliente por NIT/CC o nombre, o regístralo como nuevo.`, timestamp: new Date() }
       ]);
       setVendorName(name);
       setConversationState('awaiting_search');
@@ -429,12 +600,12 @@ export default function ChatInterface() {
     // ── CONFIRMAR CLIENTE EXISTENTE ──
     if (conversationState === 'confirming_customer') {
       const resp = inputText.trim();
-      setMessages(prev => [...prev, { id: Date.now().toString(), type: 'user', content: resp, timestamp: new Date() }]);
+      setMessages(prev => [...prev, { id: nextMessageId(), type: 'user', content: resp, timestamp: new Date() }]);
       setInputText('');
 
       if (/^(si|sí|s|ok|yes|y|claro|listo|dale|confirmo|correcto)$/i.test(resp)) {
         setMessages(prev => [...prev, {
-          id: Date.now().toString(),
+          id: nextMessageId(),
           type: 'bot',
           content: `¡Hola de nuevo, ${customerData.name}! 👋 Sube las fotos de los productos y escribe la cantidad. 📦`,
           timestamp: new Date()
@@ -442,7 +613,7 @@ export default function ChatInterface() {
         setConversationState('ready');
       } else {
         setMessages(prev => [...prev, {
-          id: Date.now().toString(),
+          id: nextMessageId(),
           type: 'bot',
           content: 'Busca otro perfil arriba o regístrate como nuevo cliente.',
           timestamp: new Date()
@@ -456,9 +627,9 @@ export default function ChatInterface() {
     // ── TIPO IDENTIFICACIÓN ──
     if (conversationState === 'awaiting_tipo_id') {
       const tipoIdentificacion = inputText.trim().toUpperCase();
-      setMessages(prev => [...prev, { id: Date.now().toString(), type: 'user', content: tipoIdentificacion, timestamp: new Date() }]);
+      setMessages(prev => [...prev, { id: nextMessageId(), type: 'user', content: tipoIdentificacion, timestamp: new Date() }]);
       setCustomerData(prev => ({ ...prev, tipoIdentificacion }));
-      setMessages(prev => [...prev, { id: (Date.now() + 1).toString(), type: 'bot', content: '¿Cuál es tu número de identificación?', timestamp: new Date() }]);
+      setMessages(prev => [...prev, { id: nextMessageId(), type: 'bot', content: '¿Cuál es tu número de identificación?', timestamp: new Date() }]);
       setConversationState('awaiting_cc_nit');
       setInputText('');
       return;
@@ -467,9 +638,9 @@ export default function ChatInterface() {
     // ── CC/NIT ──
     if (conversationState === 'awaiting_cc_nit') {
       const ccNit = inputText.trim();
-      setMessages(prev => [...prev, { id: Date.now().toString(), type: 'user', content: ccNit, timestamp: new Date() }]);
+      setMessages(prev => [...prev, { id: nextMessageId(), type: 'user', content: ccNit, timestamp: new Date() }]);
       setCustomerData(prev => ({ ...prev, ccNit }));
-      setMessages(prev => [...prev, { id: (Date.now() + 1).toString(), type: 'bot', content: '¿Cuál es tu primer nombre?', timestamp: new Date() }]);
+      setMessages(prev => [...prev, { id: nextMessageId(), type: 'bot', content: '¿Cuál es tu primer nombre?', timestamp: new Date() }]);
       setConversationState('awaiting_primer_nombre');
       setInputText('');
       return;
@@ -478,9 +649,9 @@ export default function ChatInterface() {
     // ── PRIMER NOMBRE ──
     if (conversationState === 'awaiting_primer_nombre') {
       const primerNombre = inputText.trim();
-      setMessages(prev => [...prev, { id: Date.now().toString(), type: 'user', content: primerNombre, timestamp: new Date() }]);
+      setMessages(prev => [...prev, { id: nextMessageId(), type: 'user', content: primerNombre, timestamp: new Date() }]);
       setCustomerData(prev => ({ ...prev, primerNombre }));
-      setMessages(prev => [...prev, { id: (Date.now() + 1).toString(), type: 'bot', content: '¿Segundo nombre? (escribe "no" si no tienes)', timestamp: new Date() }]);
+      setMessages(prev => [...prev, { id: nextMessageId(), type: 'bot', content: '¿Segundo nombre? (escribe "no" si no tienes)', timestamp: new Date() }]);
       setConversationState('awaiting_segundo_nombre');
       setInputText('');
       return;
@@ -490,9 +661,9 @@ export default function ChatInterface() {
     if (conversationState === 'awaiting_segundo_nombre') {
       const input = inputText.trim();
       const segundoNombre = /^(no|ninguno|n\/a|-)$/i.test(input) ? undefined : input;
-      setMessages(prev => [...prev, { id: Date.now().toString(), type: 'user', content: input, timestamp: new Date() }]);
+      setMessages(prev => [...prev, { id: nextMessageId(), type: 'user', content: input, timestamp: new Date() }]);
       setCustomerData(prev => ({ ...prev, segundoNombre }));
-      setMessages(prev => [...prev, { id: (Date.now() + 1).toString(), type: 'bot', content: '¿Primer apellido?', timestamp: new Date() }]);
+      setMessages(prev => [...prev, { id: nextMessageId(), type: 'bot', content: '¿Primer apellido?', timestamp: new Date() }]);
       setConversationState('awaiting_primer_apellido');
       setInputText('');
       return;
@@ -501,9 +672,9 @@ export default function ChatInterface() {
     // ── PRIMER APELLIDO ──
     if (conversationState === 'awaiting_primer_apellido') {
       const primerApellido = inputText.trim();
-      setMessages(prev => [...prev, { id: Date.now().toString(), type: 'user', content: primerApellido, timestamp: new Date() }]);
+      setMessages(prev => [...prev, { id: nextMessageId(), type: 'user', content: primerApellido, timestamp: new Date() }]);
       setCustomerData(prev => ({ ...prev, primerApellido }));
-      setMessages(prev => [...prev, { id: (Date.now() + 1).toString(), type: 'bot', content: '¿Segundo apellido? (escribe "no" si no tienes)', timestamp: new Date() }]);
+      setMessages(prev => [...prev, { id: nextMessageId(), type: 'bot', content: '¿Segundo apellido? (escribe "no" si no tienes)', timestamp: new Date() }]);
       setConversationState('awaiting_segundo_apellido');
       setInputText('');
       return;
@@ -513,9 +684,9 @@ export default function ChatInterface() {
     if (conversationState === 'awaiting_segundo_apellido') {
       const input = inputText.trim();
       const segundoApellido = /^(no|ninguno|n\/a|-)$/i.test(input) ? undefined : input;
-      setMessages(prev => [...prev, { id: Date.now().toString(), type: 'user', content: input, timestamp: new Date() }]);
+      setMessages(prev => [...prev, { id: nextMessageId(), type: 'user', content: input, timestamp: new Date() }]);
       setCustomerData(prev => ({ ...prev, segundoApellido }));
-      setMessages(prev => [...prev, { id: (Date.now() + 1).toString(), type: 'bot', content: '¿Teléfono principal? (ej: 3115555555)', timestamp: new Date() }]);
+      setMessages(prev => [...prev, { id: nextMessageId(), type: 'bot', content: '¿Teléfono principal? (ej: 3115555555)', timestamp: new Date() }]);
       setConversationState('awaiting_phone');
       setInputText('');
       return;
@@ -525,13 +696,13 @@ export default function ChatInterface() {
     if (conversationState === 'awaiting_phone') {
       const phone = inputText.trim();
       if (!validatePhoneNumber(phone)) {
-        setMessages(prev => [...prev, { id: Date.now().toString(), type: 'bot', content: '❌ Teléfono inválido. Debe tener 10-15 dígitos.', timestamp: new Date() }]);
+        setMessages(prev => [...prev, { id: nextMessageId(), type: 'bot', content: '❌ Teléfono inválido. Debe tener 10-15 dígitos.', timestamp: new Date() }]);
         setInputText('');
         return;
       }
-      setMessages(prev => [...prev, { id: Date.now().toString(), type: 'user', content: phone, timestamp: new Date() }]);
+      setMessages(prev => [...prev, { id: nextMessageId(), type: 'user', content: phone, timestamp: new Date() }]);
       setCustomerData(prev => ({ ...prev, phone }));
-      setMessages(prev => [...prev, { id: (Date.now() + 1).toString(), type: 'bot', content: '¿Teléfono secundario? (escribe "no" si no tienes)', timestamp: new Date() }]);
+      setMessages(prev => [...prev, { id: nextMessageId(), type: 'bot', content: '¿Teléfono secundario? (escribe "no" si no tienes)', timestamp: new Date() }]);
       setConversationState('awaiting_telefono_2');
       setInputText('');
       return;
@@ -541,9 +712,9 @@ export default function ChatInterface() {
     if (conversationState === 'awaiting_telefono_2') {
       const input = inputText.trim();
       const telefono2 = /^(no|ninguno|n\/a|-)$/i.test(input) ? undefined : input;
-      setMessages(prev => [...prev, { id: Date.now().toString(), type: 'user', content: input, timestamp: new Date() }]);
+      setMessages(prev => [...prev, { id: nextMessageId(), type: 'user', content: input, timestamp: new Date() }]);
       setCustomerData(prev => ({ ...prev, telefono2 }));
-      setMessages(prev => [...prev, { id: (Date.now() + 1).toString(), type: 'bot', content: '¿Cuál es tu email? (escribe "no" si no tienes)', timestamp: new Date() }]);
+      setMessages(prev => [...prev, { id: nextMessageId(), type: 'bot', content: '¿Cuál es tu email? (escribe "no" si no tienes)', timestamp: new Date() }]);
       setConversationState('awaiting_email');
       setInputText('');
       return;
@@ -553,14 +724,14 @@ export default function ChatInterface() {
     if (conversationState === 'awaiting_email') {
       const input = inputText.trim();
       if (!/^(no|ninguno|n\/a|-)$/i.test(input) && (!input.includes('@') || !input.includes('.'))) {
-        setMessages(prev => [...prev, { id: Date.now().toString(), type: 'bot', content: '❌ Email inválido. Usa formato usuario@ejemplo.com o escribe "no"', timestamp: new Date() }]);
+        setMessages(prev => [...prev, { id: nextMessageId(), type: 'bot', content: '❌ Email inválido. Usa formato usuario@ejemplo.com o escribe "no"', timestamp: new Date() }]);
         setInputText('');
         return;
       }
       const email = /^(no|ninguno|n\/a|-)$/i.test(input) ? '' : input;
-      setMessages(prev => [...prev, { id: Date.now().toString(), type: 'user', content: input, timestamp: new Date() }]);
+      setMessages(prev => [...prev, { id: nextMessageId(), type: 'user', content: input, timestamp: new Date() }]);
       setCustomerData(prev => ({ ...prev, email }));
-      setMessages(prev => [...prev, { id: (Date.now() + 1).toString(), type: 'bot', content: '¿En qué ciudad estás?', timestamp: new Date() }]);
+      setMessages(prev => [...prev, { id: nextMessageId(), type: 'bot', content: '¿En qué ciudad estás?', timestamp: new Date() }]);
       setConversationState('awaiting_city');
       setInputText('');
       return;
@@ -569,9 +740,9 @@ export default function ChatInterface() {
     // ── CIUDAD ──
     if (conversationState === 'awaiting_city') {
       const city = inputText.trim();
-      setMessages(prev => [...prev, { id: Date.now().toString(), type: 'user', content: city, timestamp: new Date() }]);
+      setMessages(prev => [...prev, { id: nextMessageId(), type: 'user', content: city, timestamp: new Date() }]);
       setCustomerData(prev => ({ ...prev, city }));
-      setMessages(prev => [...prev, { id: (Date.now() + 1).toString(), type: 'bot', content: '¿En qué departamento?', timestamp: new Date() }]);
+      setMessages(prev => [...prev, { id: nextMessageId(), type: 'bot', content: '¿En qué departamento?', timestamp: new Date() }]);
       setConversationState('awaiting_departamento');
       setInputText('');
       return;
@@ -580,9 +751,9 @@ export default function ChatInterface() {
     // ── DEPARTAMENTO ──
     if (conversationState === 'awaiting_departamento') {
       const departamento = inputText.trim();
-      setMessages(prev => [...prev, { id: Date.now().toString(), type: 'user', content: departamento, timestamp: new Date() }]);
+      setMessages(prev => [...prev, { id: nextMessageId(), type: 'user', content: departamento, timestamp: new Date() }]);
       setCustomerData(prev => ({ ...prev, departamento }));
-      setMessages(prev => [...prev, { id: (Date.now() + 1).toString(), type: 'bot', content: '¿Dirección completa? (ej: Cra 45 #95-23)', timestamp: new Date() }]);
+      setMessages(prev => [...prev, { id: nextMessageId(), type: 'bot', content: '¿Dirección completa? (ej: Cra 45 #95-23)', timestamp: new Date() }]);
       setConversationState('awaiting_address');
       setInputText('');
       return;
@@ -591,17 +762,37 @@ export default function ChatInterface() {
     // ── DIRECCIÓN + GUARDAR ──
     if (conversationState === 'awaiting_address') {
       const address = inputText.trim();
-      setMessages(prev => [...prev, { id: Date.now().toString(), type: 'user', content: address, timestamp: new Date() }]);
+      setMessages(prev => [...prev, { id: nextMessageId(), type: 'user', content: address, timestamp: new Date() }]);
       setIsProcessing(true);
 
-      try {
-        const fullName = [
-          customerData.primerNombre,
-          customerData.segundoNombre,
-          customerData.primerApellido,
-          customerData.segundoApellido,
-        ].filter(Boolean).join(' ') || customerData.name;
+      const fullName = [
+        customerData.primerNombre,
+        customerData.segundoNombre,
+        customerData.primerApellido,
+        customerData.segundoApellido,
+      ].filter(Boolean).join(' ') || customerData.name;
 
+      // Sin conexión: el cliente queda en el dispositivo y viaja embebido en el
+      // pedido — el servidor lo crea al sincronizar
+      const continueOffline = () => {
+        setCustomerData(prev => ({ ...prev, address, name: fullName }));
+        setMessages(prev => [...prev, {
+          id: nextMessageId(),
+          type: 'bot',
+          content: `📴 Sin conexión — ¡listo, ${fullName}! Tus datos quedaron guardados en el dispositivo y se registrarán al enviar el pedido. Sube las fotos de los productos y escribe la cantidad. 📦`,
+          timestamp: new Date()
+        }]);
+        setConversationState('ready');
+      };
+
+      if (!navigator.onLine) {
+        continueOffline();
+        setIsProcessing(false);
+        setInputText('');
+        return;
+      }
+
+      try {
         const payload = {
           name: fullName,
           email: customerData.email || null,
@@ -632,19 +823,24 @@ export default function ChatInterface() {
         setCustomerData(prev => ({ ...prev, address, name: fullName, id: data.customer.id }));
 
         setMessages(prev => [...prev, {
-          id: (Date.now() + 1).toString(),
+          id: nextMessageId(),
           type: 'bot',
           content: `${data.customer.isNew ? `¡Bienvenido, ${fullName}! 🎉` : `¡Hola de nuevo, ${fullName}! 👋`} Sube las fotos de los productos y escribe la cantidad. 📦`,
           timestamp: new Date()
         }]);
         setConversationState('ready');
       } catch (error) {
-        setMessages(prev => [...prev, {
-          id: Date.now().toString(),
-          type: 'bot',
-          content: `Error al registrar: ${error instanceof Error ? error.message : 'Intenta nuevamente'}`,
-          timestamp: new Date()
-        }]);
+        // Falla de red a mitad del registro → continuar en modo offline
+        if (!navigator.onLine || error instanceof TypeError) {
+          continueOffline();
+        } else {
+          setMessages(prev => [...prev, {
+            id: nextMessageId(),
+            type: 'bot',
+            content: `Error al registrar: ${error instanceof Error ? error.message : 'Intenta nuevamente'}`,
+            timestamp: new Date()
+          }]);
+        }
       } finally {
         setIsProcessing(false);
         setInputText('');
@@ -656,7 +852,7 @@ export default function ChatInterface() {
     setInputText('');
 
     setMessages(prev => [...prev, {
-      id: Date.now().toString(),
+      id: nextMessageId(),
       type: 'user',
       content: currentText,
       timestamp: new Date()
@@ -676,16 +872,16 @@ export default function ChatInterface() {
             ? { ...m, metadata: { ...m.metadata, pendingPriceConfirm: false, pendingQuantity: true } }
             : m
         ));
-        setMessages(prev => [...prev, { id: Date.now().toString(), type: 'bot', content: '✅ Perfecto. ¿Cuántas unidades?', timestamp: new Date() }]);
+        setMessages(prev => [...prev, { id: nextMessageId(), type: 'bot', content: '✅ Perfecto. ¿Cuántas unidades?', timestamp: new Date() }]);
       } else if (newPrice && newPrice > 0) {
         setMessages(prev => prev.map(m =>
           m.id === pendingPriceBot.id
             ? { ...m, metadata: { ...m.metadata, price: newPrice, pendingPriceConfirm: false, pendingQuantity: true } }
             : m
         ));
-        setMessages(prev => [...prev, { id: Date.now().toString(), type: 'bot', content: `✅ Precio actualizado a COP $${newPrice.toLocaleString('es-CO')}. ¿Cuántas unidades?`, timestamp: new Date() }]);
+        setMessages(prev => [...prev, { id: nextMessageId(), type: 'bot', content: `✅ Precio actualizado a COP $${newPrice.toLocaleString('es-CO')}. ¿Cuántas unidades?`, timestamp: new Date() }]);
       } else {
-        setMessages(prev => [...prev, { id: Date.now().toString(), type: 'bot', content: 'Escribe "sí" para confirmar o un número para cambiar el precio.', timestamp: new Date() }]);
+        setMessages(prev => [...prev, { id: nextMessageId(), type: 'bot', content: 'Escribe "sí" para confirmar o un número para cambiar el precio.', timestamp: new Date() }]);
       }
       return;
     }
@@ -701,7 +897,7 @@ export default function ChatInterface() {
           m.id === pendingBot.id ? { ...m, metadata: { ...m.metadata, pendingQuantity: false } } : m
         ));
       } else {
-        setMessages(prev => [...prev, { id: Date.now().toString(), type: 'bot', content: 'No entendí. Escribe un número, por ejemplo: 24', timestamp: new Date() }]);
+        setMessages(prev => [...prev, { id: nextMessageId(), type: 'bot', content: 'No entendí. Escribe un número, por ejemplo: 24', timestamp: new Date() }]);
       }
     }
   };
@@ -783,7 +979,7 @@ export default function ChatInterface() {
     const label = notes ? `${name} (${notes})` : name;
     const priceLabel = price ? ` @ COP $${price.toLocaleString('es-CO')}` : '';
     setMessages(prev => [...prev, {
-      id: Date.now().toString(),
+      id: nextMessageId(),
       type: 'system',
       content: `✅ Agregado: ${quantity} und de ${label}${priceLabel}`,
       timestamp: new Date()
@@ -808,7 +1004,7 @@ export default function ChatInterface() {
 
     const label = notes ? `${name} (${notes})` : name;
     setMessages(prev => [...prev, {
-      id: Date.now().toString(),
+      id: nextMessageId(),
       type: 'system',
       content: `✅ ${label}: ${quantity} ${finalUnitType} @ COP $${price.toLocaleString('es-CO')}`,
       timestamp: new Date()
@@ -824,7 +1020,7 @@ export default function ChatInterface() {
         formData.append('image', pendingImageFile);
         await fetch('/api/products', { method: 'POST', body: formData });
         setMessages(prev => [...prev, {
-          id: Date.now().toString(),
+          id: nextMessageId(),
           type: 'system',
           content: `📦 Guardado en inventario: ${finalRef}`,
           timestamp: new Date()
@@ -843,73 +1039,100 @@ export default function ChatInterface() {
   const handleConfirmOrder = async (deliveryAddress?: string, orderNotes?: string) => {
     setIsSending(true);
     setShowConfirmModal(false);
+
+    // Id basado en timestamp: único aun cuando el pedido se crea offline
+    const orderId = `ORD-${Date.now().toString().slice(-8)}`;
+    const payload = {
+      id: orderId,
+      customer: customerData.name,
+      email: customerData.email,
+      cc_nit: customerData.ccNit,
+      phone: customerData.phone,
+      local_name: customerData.localName,
+      city: customerData.city,
+      neighborhood: customerData.neighborhood,
+      address: customerData.address,
+      customer_id: customerData.id,
+      vendor_name: vendorName || undefined,
+      delivery_address: deliveryAddress?.trim() || undefined,
+      notes: orderNotes?.trim() || undefined,
+      items: orderItems.map(i => ({
+        ref: i.ref,
+        name: i.name,
+        quantity: i.quantity,
+        price: i.price,
+        unit_type: i.unit_type || 'unidad',
+        notes: i.notes || undefined,
+      })),
+      status: 'Pendiente',
+      date: new Date().toLocaleDateString('es-ES'),
+      total_items: orderItems.reduce((sum, i) => sum + i.quantity, 0)
+    };
+
+    const finishOrder = (finalId: string, pendingSync: boolean) => {
+      setConfirmedOrder({
+        id: finalId,
+        customer: customerData.name,
+        vendor: vendorName,
+        items: [...orderItems],
+        total: orderItems.reduce((t, i) => t + (i.price || 0) * i.quantity, 0),
+        deliveryAddress: deliveryAddress?.trim() || undefined,
+        notes: orderNotes?.trim() || undefined,
+        pendingSync,
+      });
+      setOrderItems([]);
+      clearDraft();
+      setConversationState('completed');
+    };
+
+    const queueOffline = () => {
+      enqueueOrder(payload as unknown as Record<string, unknown>);
+      setPendingCount(getPendingOrders().length);
+      finishOrder(orderId, true);
+    };
+
     try {
-      const orderId = `ORD-${Math.floor(1000 + Math.random() * 9000)}`;
+      if (!navigator.onLine) {
+        queueOffline();
+        return;
+      }
+
       const res = await fetch('/api/orders', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          id: orderId,
-          customer: customerData.name,
-          email: customerData.email,
-          cc_nit: customerData.ccNit,
-          phone: customerData.phone,
-          local_name: customerData.localName,
-          city: customerData.city,
-          neighborhood: customerData.neighborhood,
-          address: customerData.address,
-          customer_id: customerData.id,
-          vendor_name: vendorName || undefined,
-          delivery_address: deliveryAddress?.trim() || undefined,
-          notes: orderNotes?.trim() || undefined,
-          items: orderItems.map(i => ({
-            ref: i.ref,
-            name: i.name,
-            quantity: i.quantity,
-            price: i.price,
-            unit_type: i.unit_type || 'unidad',
-            notes: i.notes || undefined,
-          })),
-          status: 'Pendiente',
-          date: new Date().toLocaleDateString('es-ES'),
-          total_items: orderItems.reduce((sum, i) => sum + i.quantity, 0)
-        })
+        body: JSON.stringify(payload)
       });
 
       const data = await res.json();
       if (res.ok && data.success) {
-        const finalId = data.order?.id || orderId;
-        setConfirmedOrder({
-          id: finalId,
-          customer: customerData.name,
-          vendor: vendorName,
-          items: [...orderItems],
-          total: orderItems.reduce((t, i) => t + (i.price || 0) * i.quantity, 0),
-          deliveryAddress: deliveryAddress?.trim() || undefined,
-          notes: orderNotes?.trim() || undefined,
-        });
-        setOrderItems([]);
-        setConversationState('completed');
+        finishOrder(data.order?.id || orderId, false);
+      } else if (res.status >= 500) {
+        // El servidor no pudo llegar a la nube (ej: sin internet en el servidor)
+        // — guardar localmente y reintentar con la sincronización
+        console.warn('Servidor sin conexión a la nube, encolando pedido:', data?.message);
+        queueOffline();
       } else {
         const errMsg = data?.message || data?.error || `HTTP ${res.status}`;
         console.error('Error confirmando pedido:', errMsg, data);
         setMessages(prev => [...prev, {
-          id: Date.now().toString(),
+          id: nextMessageId(),
           type: 'bot',
           content: `❌ Error al confirmar: ${errMsg}`,
           timestamp: new Date()
         }]);
       }
     } catch (err) {
-      const errMsg = err instanceof Error ? err.message : 'Error desconocido';
-      console.error('handleConfirmOrder catch:', errMsg);
-      setMessages(prev => [...prev, { id: Date.now().toString(), type: 'bot', content: `❌ Error al confirmar: ${errMsg}`, timestamp: new Date() }]);
+      // Falla de red — guardar el pedido en el dispositivo y sincronizar después
+      console.warn('handleConfirmOrder sin red, encolando pedido:', err);
+      queueOffline();
     } finally {
       setIsSending(false);
     }
   };
 
   const handleNuevoPedido = () => {
+    clearDraft();
+    setShowDraftBanner(false);
     setMessages([{
       id: '1',
       type: 'bot',
@@ -956,15 +1179,47 @@ export default function ChatInterface() {
           <div>
             <h1 className="font-semibold leading-tight">Bodega Principal</h1>
             <p className="text-xs text-white/80">
-              {vendorName ? `Vendedor: ${vendorName}` : 'en línea'}
+              {!isOnline
+                ? '📴 Sin conexión — modo offline'
+                : vendorName ? `Vendedor: ${vendorName}` : 'en línea'}
             </p>
           </div>
         </div>
         <div className="flex items-center gap-4">
+          {pendingCount > 0 && (
+            <button
+              onClick={() => runSyncRef.current()}
+              className="text-[11px] bg-white/20 hover:bg-white/30 px-2.5 py-1 rounded-full font-semibold whitespace-nowrap active:scale-95 transition-all"
+              title="Pedidos guardados en el dispositivo esperando conexión. Toca para reintentar."
+            >
+              ⏳ {pendingCount} por subir
+            </button>
+          )}
           <Phone size={20} className="opacity-80" />
           <MoreVertical size={20} className="opacity-80" />
         </div>
       </header>
+
+      {/* Banner borrador recuperado */}
+      {showDraftBanner && (
+        <div className="bg-amber-50 border-b border-amber-200 px-3 py-2 flex items-center justify-between gap-2 z-10">
+          <span className="text-xs text-amber-800">📂 Pedido recuperado — continúa donde ibas</span>
+          <div className="flex gap-3 flex-shrink-0">
+            <button
+              onClick={() => setShowDraftBanner(false)}
+              className="text-xs font-semibold text-[#00a884] hover:underline"
+            >
+              Continuar
+            </button>
+            <button
+              onClick={handleNuevoPedido}
+              className="text-xs font-semibold text-red-500 hover:underline"
+            >
+              Descartar
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Search Panel */}
       {showSearchPanel && (
@@ -1491,8 +1746,12 @@ export default function ChatInterface() {
             <div className="w-16 h-16 bg-white rounded-full flex items-center justify-center mb-4 shadow-lg">
               <Check size={32} className="text-[#00a884]" strokeWidth={3} />
             </div>
-            <h1 className="text-xl font-bold">¡Pedido enviado!</h1>
-            <p className="text-white/80 text-sm mt-1">Tu pedido fue recibido y está en cola</p>
+            <h1 className="text-xl font-bold">{confirmedOrder.pendingSync ? '¡Pedido guardado!' : '¡Pedido enviado!'}</h1>
+            <p className="text-white/80 text-sm mt-1">
+              {confirmedOrder.pendingSync
+                ? 'Guardado en este dispositivo — se enviará al recuperar conexión'
+                : 'Tu pedido fue recibido y está en cola'}
+            </p>
             <div className="mt-3 bg-white/20 rounded-full px-4 py-1.5">
               <span className="text-white font-mono font-bold tracking-wider text-sm">{confirmedOrder.id}</span>
             </div>
@@ -1569,17 +1828,38 @@ export default function ChatInterface() {
             </div>
 
             {/* Estado */}
-            <div className="bg-yellow-50 border border-yellow-200 rounded-2xl px-4 py-3 flex items-center gap-3">
-              <div className="w-2.5 h-2.5 bg-yellow-400 rounded-full flex-shrink-0 animate-pulse" />
-              <div>
-                <p className="text-sm font-semibold text-yellow-800">Estado: Pendiente</p>
-                <p className="text-xs text-yellow-600 mt-0.5">La bodega comenzará a prepararlo pronto</p>
+            {confirmedOrder.pendingSync ? (
+              <div className="bg-orange-50 border border-orange-200 rounded-2xl px-4 py-3 flex items-center gap-3">
+                <div className="w-2.5 h-2.5 bg-orange-400 rounded-full flex-shrink-0 animate-pulse" />
+                <div>
+                  <p className="text-sm font-semibold text-orange-800">Estado: Pendiente de sincronización</p>
+                  <p className="text-xs text-orange-600 mt-0.5">Se subirá automáticamente cuando haya internet</p>
+                </div>
               </div>
-            </div>
+            ) : (
+              <div className="bg-yellow-50 border border-yellow-200 rounded-2xl px-4 py-3 flex items-center gap-3">
+                <div className="w-2.5 h-2.5 bg-yellow-400 rounded-full flex-shrink-0 animate-pulse" />
+                <div>
+                  <p className="text-sm font-semibold text-yellow-800">Estado: Pendiente</p>
+                  <p className="text-xs text-yellow-600 mt-0.5">La bodega comenzará a prepararlo pronto</p>
+                </div>
+              </div>
+            )}
           </div>
 
-          {/* Botón nuevo pedido */}
-          <div className="px-4 pb-8 pt-2 flex-shrink-0 max-w-lg mx-auto w-full">
+          {/* Acciones finales */}
+          <div className="px-4 pb-8 pt-2 flex-shrink-0 max-w-lg mx-auto w-full space-y-3">
+            <a
+              href={buildWhatsAppNotifyUrl(confirmedOrder)}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="w-full py-3.5 bg-[#25D366] text-white rounded-2xl font-bold text-base shadow-lg hover:bg-[#1fb958] active:scale-[0.98] transition-all flex items-center justify-center gap-2"
+            >
+              <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true">
+                <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/>
+              </svg>
+              Notificar pedido por WhatsApp
+            </a>
             <button
               onClick={handleNuevoPedido}
               className="w-full py-3.5 bg-[#00a884] text-white rounded-2xl font-bold text-base shadow-lg hover:bg-[#008f6f] active:scale-[0.98] transition-all"
