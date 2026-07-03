@@ -259,20 +259,65 @@ export default function RemissionsInbox({ role }: Props) {
                     )}
                   </div>
 
-                  {/* Detalle expandible */}
-                  {expanded === rem.id && (
+                  {/* Detalle expandible — comparativo vendido vs empacado */}
+                  {expanded === rem.id && (() => {
+                    const soldUnits = rem.items.reduce((s, i) => s + (i.ordered_quantity || 0), 0);
+                    const packedUnits = rem.items.reduce((s, i) => s + (i.packed_quantity || 0), 0);
+                    const soldTotal = rem.items.reduce((s, i) => s + (i.ordered_quantity || 0) * (i.price || 0), 0);
+                    const packedTotal = rem.items.reduce((s, i) => s + (i.packed_quantity || 0) * (i.price || 0), 0);
+                    const diffTotal = packedTotal - soldTotal;
+                    return (
                     <div className="border-t border-gray-100 px-4 py-3 bg-gray-50">
+                      {/* Encabezado de columnas */}
+                      <div className="grid grid-cols-[1fr_52px_62px] gap-x-2 items-center mb-1.5">
+                        <span className="text-[10px] font-bold text-gray-400 uppercase">Producto</span>
+                        <span className="text-[10px] font-bold text-gray-400 uppercase text-center">Vendido</span>
+                        <span className="text-[10px] font-bold text-gray-400 uppercase text-center">Empacado</span>
+                      </div>
                       <div className="space-y-1.5 mb-3">
-                        {rem.items.map((item, idx) => (
-                          <div key={idx} className="flex justify-between items-center text-xs gap-2">
-                            <span className={`truncate ${item.status === 'agotado' ? 'text-red-500 line-through' : 'text-gray-700'}`}>
-                              <span className="font-mono text-gray-400">{item.ref}</span> · {item.name}
-                            </span>
-                            <span className="flex-shrink-0 font-medium text-gray-700">
-                              {item.packed_quantity}/{item.ordered_quantity} × ${(item.price || 0).toLocaleString('es-CO')}
+                        {rem.items.map((item, idx) => {
+                          const diff = (item.packed_quantity || 0) - (item.ordered_quantity || 0);
+                          return (
+                            <div key={idx} className="grid grid-cols-[1fr_52px_62px] gap-x-2 items-center text-xs">
+                              <span className={`truncate ${item.status === 'agotado' ? 'text-red-500 line-through' : 'text-gray-700'}`}>
+                                <span className="font-mono text-gray-400">{item.ref}</span> · {item.name}
+                                <span className="text-gray-400"> · ${(item.price || 0).toLocaleString('es-CO')}</span>
+                              </span>
+                              <span className="text-center font-medium text-gray-600">
+                                {item.status === 'agregado' ? '—' : item.ordered_quantity}
+                              </span>
+                              <span className={`text-center font-bold ${
+                                item.status === 'agotado' ? 'text-red-600' :
+                                item.status === 'agregado' ? 'text-blue-600' :
+                                diff !== 0 ? 'text-yellow-700' : 'text-green-700'
+                              }`}>
+                                {item.packed_quantity}
+                                {item.status !== 'agregado' && diff !== 0 && (
+                                  <span className="font-normal text-[10px]"> ({diff > 0 ? '+' : ''}{diff})</span>
+                                )}
+                              </span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                      {/* Totales comparados */}
+                      <div className="rounded-lg bg-white border border-gray-200 p-3 mb-3 text-xs space-y-1">
+                        <div className="flex justify-between">
+                          <span className="text-gray-500">🛒 Vendido</span>
+                          <span className="font-semibold text-gray-700">{soldUnits} und · ${soldTotal.toLocaleString('es-CO')}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-gray-500">📦 Empacado</span>
+                          <span className="font-semibold text-gray-700">{packedUnits} und · ${packedTotal.toLocaleString('es-CO')}</span>
+                        </div>
+                        {diffTotal !== 0 && (
+                          <div className="flex justify-between border-t border-gray-100 pt-1">
+                            <span className="text-gray-500">Diferencia</span>
+                            <span className={`font-bold ${diffTotal < 0 ? 'text-red-600' : 'text-blue-600'}`}>
+                              {packedUnits - soldUnits > 0 ? '+' : ''}{packedUnits - soldUnits} und · {diffTotal > 0 ? '+' : '−'}${Math.abs(diffTotal).toLocaleString('es-CO')}
                             </span>
                           </div>
-                        ))}
+                        )}
                       </div>
                       {rem.delivery_address && (
                         <p className="text-xs text-gray-500 mb-3">📍 Entrega: {rem.delivery_address}</p>
@@ -286,7 +331,8 @@ export default function RemissionsInbox({ role }: Props) {
                         <Download size={13} /> Descargar PDF
                       </a>
                     </div>
-                  )}
+                    );
+                  })()}
                 </div>
               );
             })
