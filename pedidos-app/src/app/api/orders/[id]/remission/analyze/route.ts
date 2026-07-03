@@ -146,12 +146,44 @@ Devuelve TODOS los items del pedido original (los 39 o los que sean), cada uno c
       packing: { packer_name: string; verifier_name: string; packing_time: string; packing_location: string; packing_date: string; boxes_count: number | null };
     };
 
-    // Enriquecer con datos del pedido original (precio, cantidad pedida)
-    const originalByRef = new Map(orderItems.map(oi => [String(oi.product_ref).toUpperCase(), oi]));
+    // Enriquecer con datos del pedido original (precio, cantidad pedida).
+    // La IA puede transcribir la REF con diferencias (espacios, sufijos recortados),
+    // así que el cruce no puede ser solo por igualdad exacta.
+    type OrderItem = typeof orderItems[number];
+    const norm = (s: string) => String(s).toUpperCase().trim().replace(/\s+/g, ' ');
+    const originalByRef = new Map<string, OrderItem>(orderItems.map(oi => [norm(oi.product_ref), oi]));
+    // Índice por primer token de la REF (ej. "PTZ-0300" de "PTZ-0300 JUGUETE PISTOLA"),
+    // solo cuando el token identifica un único item
+    const byFirstToken = new Map<string, OrderItem | null>();
+    for (const oi of orderItems) {
+      const tok = norm(oi.product_ref).split(' ')[0];
+      byFirstToken.set(tok, byFirstToken.has(tok) ? null : oi);
+    }
+    const byName = new Map<string, OrderItem | null>();
+    for (const oi of orderItems) {
+      const n = norm(oi.product_name || '');
+      if (n) byName.set(n, byName.has(n) ? null : oi);
+    }
+    const findOriginal = (ref: string, name: string): OrderItem | undefined => {
+      const n = norm(ref);
+      const exact = originalByRef.get(n);
+      if (exact) return exact;
+      const tokenMatch = byFirstToken.get(n.split(' ')[0]);
+      if (tokenMatch) return tokenMatch;
+      // Una REF prefijo de la otra (la IA recortó o alargó el texto)
+      const prefixCandidates = orderItems.filter(oi => {
+        const on = norm(oi.product_ref);
+        return n.length >= 3 && (on.startsWith(n) || n.startsWith(on));
+      });
+      if (prefixCandidates.length === 1) return prefixCandidates[0];
+      // Último recurso: nombre de producto idéntico y único
+      const nameMatch = byName.get(norm(name));
+      return nameMatch || undefined;
+    };
     const enriched = parsed.items.map(item => {
-      const orig = originalByRef.get(item.ref.toUpperCase());
+      const orig = item.status === 'agregado' ? originalByRef.get(norm(item.ref)) : findOriginal(item.ref, item.name);
       return {
-        ref: item.ref,
+        ref: orig?.product_ref ?? item.ref,
         name: item.name || orig?.product_name || item.ref,
         ordered_quantity: orig?.quantity ?? 0,
         packed_quantity: Math.max(0, item.packed_quantity),
@@ -162,22 +194,28 @@ Devuelve TODOS los items del pedido original (los 39 o los que sean), cada uno c
       };
     });
 
-    // Para agregados sin precio, intentar buscar en inventario
-    const missingPriceRefs = enriched.filter(i => i.status === 'agregado' && !i.price).map(i => i.ref);
-    if (missingPriceRefs.length > 0) {
+    // Para cualquier item sin precio (agregados o cruces fallidos), intentar buscar en inventario
+    const missingPrice = enriched.filter(i => !i.price);
+    if (missingPrice.length > 0) {
+      // Buscar tanto por la REF completa como por su primer token
+      const refsToSearch = [...new Set(missingPrice.flatMap(i => [i.ref, i.ref.split(/\s+/)[0]]))];
       const { data: inv } = await getSupabase()
         .from('INVENTARIO EL PUNTAZO')
         .select('Referencia, Producto, "P. Venta"')
-        .in('Referencia', missingPriceRefs);
+        .in('Referencia', refsToSearch);
       if (inv) {
-        const invMap = new Map(inv.map((r: any) => [String(r.Referencia).toUpperCase(), r]));
+        const invByRef = new Map(inv.map((r: any) => [norm(r.Referencia), r]));
+        const invByToken = new Map<string, any>();
+        for (const r of inv) {
+          const tok = norm((r as any).Referencia).split(' ')[0];
+          invByToken.set(tok, invByToken.has(tok) ? null : r);
+        }
         for (const item of enriched) {
-          if (item.status === 'agregado' && !item.price) {
-            const row = invMap.get(item.ref.toUpperCase());
-            if (row) {
-              item.price = row['P. Venta'] ? parseFloat(row['P. Venta']) : 0;
-              if (!item.name || item.name === item.ref) item.name = row.Producto;
-            }
+          if (item.price) continue;
+          const row = invByRef.get(norm(item.ref)) || invByToken.get(norm(item.ref).split(' ')[0]);
+          if (row) {
+            item.price = row['P. Venta'] ? parseFloat(row['P. Venta']) : 0;
+            if (!item.name || item.name === item.ref) item.name = row.Producto;
           }
         }
       }
