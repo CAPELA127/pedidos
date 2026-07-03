@@ -169,6 +169,12 @@ export default function Dashboard() {
     }));
   };
 
+  const formatThousands = (digits: string) => digits.replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+
+  const updateLiqMoneyDraft = (remId: string, field: 'freight' | 'returns', raw: string) => {
+    updateLiqDraft(remId, field, raw.replace(/\D/g, ''));
+  };
+
   const liquidateRemission = async (remId: string) => {
     const draft = liqDrafts[remId] || { discount: '', freight: '', returns: '', reason: '' };
     const returnsValue = parseFloat(draft.returns) || 0;
@@ -613,25 +619,31 @@ export default function Dashboard() {
                               </div>
                               <div>
                                 <label className="text-[10px] font-semibold text-gray-600 block mb-0.5">Valor del flete ($)</label>
-                                <input
-                                  type="number"
-                                  min={0}
-                                  value={draft.freight}
-                                  onChange={e => updateLiqDraft(rem.id, 'freight', e.target.value)}
-                                  placeholder="0"
-                                  className="w-full text-xs border rounded-lg px-2 py-1.5 focus:ring-2 focus:ring-purple-400 focus:border-purple-400 outline-none"
-                                />
+                                <div className="relative">
+                                  <span className="absolute left-2 top-1/2 -translate-y-1/2 text-xs text-gray-400 pointer-events-none">$</span>
+                                  <input
+                                    type="text"
+                                    inputMode="numeric"
+                                    value={formatThousands(draft.freight)}
+                                    onChange={e => updateLiqMoneyDraft(rem.id, 'freight', e.target.value)}
+                                    placeholder="0"
+                                    className="w-full text-xs border rounded-lg pl-5 pr-2 py-1.5 focus:ring-2 focus:ring-purple-400 focus:border-purple-400 outline-none"
+                                  />
+                                </div>
                               </div>
                               <div>
                                 <label className="text-[10px] font-semibold text-gray-600 block mb-0.5">Devoluciones/daños ($)</label>
-                                <input
-                                  type="number"
-                                  min={0}
-                                  value={draft.returns}
-                                  onChange={e => updateLiqDraft(rem.id, 'returns', e.target.value)}
-                                  placeholder="0"
-                                  className="w-full text-xs border rounded-lg px-2 py-1.5 focus:ring-2 focus:ring-purple-400 focus:border-purple-400 outline-none"
-                                />
+                                <div className="relative">
+                                  <span className="absolute left-2 top-1/2 -translate-y-1/2 text-xs text-gray-400 pointer-events-none">$</span>
+                                  <input
+                                    type="text"
+                                    inputMode="numeric"
+                                    value={formatThousands(draft.returns)}
+                                    onChange={e => updateLiqMoneyDraft(rem.id, 'returns', e.target.value)}
+                                    placeholder="0"
+                                    className="w-full text-xs border rounded-lg pl-5 pr-2 py-1.5 focus:ring-2 focus:ring-purple-400 focus:border-purple-400 outline-none"
+                                  />
+                                </div>
                               </div>
                             </div>
                             {returnsValue > 0 && (
