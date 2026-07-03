@@ -6,6 +6,7 @@ import ProductCard from '../ProductCard';
 import { normalizeAddress, validatePhoneNumber } from '@/lib/normalize-address';
 import { saveDraft, loadDraft, clearDraft } from '@/lib/order-draft';
 import { getPendingOrders, enqueueOrder, syncPendingOrders, cacheInventory, findCachedProduct } from '@/lib/offline-queue';
+import { VENDORS } from '@/lib/vendors';
 
 interface OrderItem {
   itemId: string;
@@ -592,6 +593,8 @@ export default function ChatInterface() {
         { id: nextMessageId(), type: 'bot', content: `¡Listo, ${name}! 👍 Ahora busca el cliente por NIT/CC o nombre, o regístralo como nuevo.`, timestamp: new Date() }
       ]);
       setVendorName(name);
+      // Mismo nombre que usa el portal del vendedor — mantiene la trazabilidad
+      try { localStorage.setItem('pedidos_vendor_name', name); } catch { /* almacenamiento no disponible */ }
       setConversationState('awaiting_search');
       setInputText('');
       return;
@@ -1485,8 +1488,22 @@ export default function ChatInterface() {
             </>
           )}
 
-          {/* Input de texto */}
-          {showInput && (
+          {/* Input de texto — desplegable de vendedores cuando se pide el nombre */}
+          {showInput && conversationState === 'awaiting_vendor' ? (
+            <div className="flex-1 bg-white rounded-full px-4 py-2.5 shadow-sm flex items-center min-h-[44px]">
+              <select
+                className={`w-full bg-transparent outline-none text-sm ${inputText ? 'text-gray-800' : 'text-gray-400'}`}
+                value={inputText}
+                onChange={e => setInputText(e.target.value)}
+                disabled={isProcessing}
+              >
+                <option value="">Selecciona tu nombre (vendedor)...</option>
+                {VENDORS.map(v => (
+                  <option key={v} value={v}>{v}</option>
+                ))}
+              </select>
+            </div>
+          ) : showInput && (
             <div className="flex-1 bg-white rounded-full px-4 py-2.5 shadow-sm flex items-center min-h-[44px]">
               <input
                 type="text"

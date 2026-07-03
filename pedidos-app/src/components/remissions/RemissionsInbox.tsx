@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { Download, RefreshCw, User, LogOut, Package } from 'lucide-react';
+import { VENDORS } from '@/lib/vendors';
 
 interface RemissionListItem {
   ref: string;
@@ -131,16 +132,19 @@ export default function RemissionsInbox({ role }: Props) {
           </div>
           <h1 className="text-lg font-bold text-gray-800">Portal del Vendedor</h1>
           <p className="text-sm text-gray-500 mt-1 mb-5">
-            Escribe tu nombre tal como lo usas al tomar pedidos
+            Selecciona tu nombre para ver tus remisiones
           </p>
-          <input
+          <select
             value={nameInput}
             onChange={e => setNameInput(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && handleEnter()}
-            placeholder="Tu nombre de vendedor..."
-            className="w-full px-4 py-3 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-[#00a884] mb-3"
+            className={`w-full px-4 py-3 border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-[#00a884] mb-3 bg-white ${nameInput ? 'text-gray-800' : 'text-gray-400'}`}
             autoFocus
-          />
+          >
+            <option value="">Selecciona tu nombre...</option>
+            {VENDORS.map(v => (
+              <option key={v} value={v}>{v}</option>
+            ))}
+          </select>
           <button
             onClick={handleEnter}
             disabled={!nameInput.trim()}
