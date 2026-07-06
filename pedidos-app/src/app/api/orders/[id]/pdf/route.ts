@@ -10,9 +10,18 @@ export async function GET(
   try {
     const { id: orderId } = await params;
 
-    const { data: raw, error } = await getSupabase()
-      .from('orders')
-      .select(`
+    const withAccounting = `
+        id,
+        status,
+        total,
+        created_at,
+        vendor_name,
+        delivery_address,
+        notes,
+        customers (name, email, phone, local_name, city, neighborhood, address),
+        order_items (product_ref, product_name, quantity, unit_type, notes, price_at_time, discount_percent, tax_percent, estampilla, impoconsumo)
+      `;
+    const withoutAccounting = `
         id,
         status,
         total,
@@ -22,21 +31,44 @@ export async function GET(
         notes,
         customers (name, email, phone, local_name, city, neighborhood, address),
         order_items (product_ref, product_name, quantity, unit_type, notes, price_at_time)
-      `)
+      `;
+    let { data: raw, error } = await getSupabase()
+      .from('orders')
+      .select(withAccounting)
       .eq('id', orderId)
       .single();
+
+    // Migración ADD_SECRETARIA_ACCOUNTING_FIELDS.sql aún no corrida — reintentar sin esas columnas
+    if (error?.code === '42703') {
+      ({ data: raw, error } = await getSupabase()
+        .from('orders')
+        .select(withoutAccounting)
+        .eq('id', orderId)
+        .single());
+    }
 
     if (error || !raw) {
       return NextResponse.json({ error: 'Pedido no encontrado' }, { status: 404 });
     }
 
+    const order = raw as unknown as {
+      id: string; status: string; total: number; created_at: string;
+      vendor_name: string | null; delivery_address: string | null; notes: string | null;
+      customers: { name: string; email: string; phone: string; local_name: string; city: string; neighborhood: string; address: string }
+        | { name: string; email: string; phone: string; local_name: string; city: string; neighborhood: string; address: string }[] | null;
+      order_items: {
+        product_ref: string; product_name: string | null; quantity: number; unit_type: string | null; notes: string | null;
+        price_at_time: number; discount_percent?: number | null; tax_percent?: number | null; estampilla?: number | null; impoconsumo?: number | null;
+      }[];
+    };
+
     type CustomerRow = { name: string; email: string; phone: string; local_name: string; city: string; neighborhood: string; address: string };
-    const rawCustomers = raw.customers as unknown as CustomerRow | CustomerRow[] | null;
+    const rawCustomers = order.customers as unknown as CustomerRow | CustomerRow[] | null;
     const c: CustomerRow | null = Array.isArray(rawCustomers)
       ? rawCustomers[0] ?? null
       : rawCustomers ?? null;
 
-    const rawItems = (raw.order_items as any[]) || [];
+    const rawItems = (order.order_items as any[]) || [];
 
     // Buscar nombres completos en inventario por referencia
     const refs = rawItems.map((oi) => oi.product_ref).filter(Boolean);
@@ -53,14 +85,27 @@ export async function GET(
       }
     }
 
-    const items = rawItems.map((oi) => ({
-      ref: oi.product_ref,
-      name: oi.product_name || inventarioMap[oi.product_ref] || oi.product_ref,
-      quantity: oi.quantity,
-      price: oi.price_at_time,
-      unit_type: oi.unit_type || 'unidad',
-      notes: oi.notes || null,
-    }));
+    const items = rawItems.map((oi) => {
+      const discountPercent = oi.discount_percent || 0;
+      const taxPercent = oi.tax_percent || 0;
+      const estampilla = oi.estampilla || 0;
+      const impoconsumo = oi.impoconsumo || 0;
+      const subtotal = (oi.price_at_time || 0) * oi.quantity - ((oi.price_at_time || 0) * oi.quantity) * (discountPercent / 100);
+      const total = subtotal * (taxPercent / 100 + 1) + estampilla * oi.quantity + impoconsumo * oi.quantity;
+      return {
+        ref: oi.product_ref,
+        name: oi.product_name || inventarioMap[oi.product_ref] || oi.product_ref,
+        quantity: oi.quantity,
+        price: oi.price_at_time,
+        unit_type: oi.unit_type || 'unidad',
+        notes: oi.notes || null,
+        discountPercent,
+        taxPercent,
+        subtotal,
+        total,
+      };
+    });
+    const grandTotal = items.reduce((s, i) => s + i.total, 0);
 
     // ── PDF ────────────────────────────────────────────────────────────────────
     const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
@@ -77,17 +122,17 @@ export async function GET(
     doc.text('PEDIDO', margin, 16);
     doc.setFontSize(13);
     doc.setFont('helvetica', 'normal');
-    doc.text(raw.id, margin, 26);
+    doc.text(order.id, margin, 26);
 
     // Fecha y estado arriba a la derecha
     doc.setFontSize(9);
-    const fechaStr = raw.created_at
-      ? new Date(raw.created_at).toLocaleDateString('es-CO')
+    const fechaStr = order.created_at
+      ? new Date(order.created_at).toLocaleDateString('es-CO')
       : 'N/A';
     doc.text(`Fecha: ${fechaStr}`, pageWidth - margin, 16, { align: 'right' });
-    doc.text(`Estado: ${raw.status}`, pageWidth - margin, 22, { align: 'right' });
+    doc.text(`Estado: ${order.status}`, pageWidth - margin, 22, { align: 'right' });
     doc.text(
-      `Total: COP $${(raw.total || 0).toLocaleString('es-CO')}`,
+      `Total: COP $${grandTotal.toLocaleString('es-CO')}`,
       pageWidth - margin,
       28,
       { align: 'right' }
@@ -127,10 +172,10 @@ export async function GET(
     y = (doc as any).lastAutoTable.finalY + 6;
 
     // ── Vendedor (resaltado verde) ────────────────────────────────────────────
-    if (raw.vendor_name) {
+    if (order.vendor_name) {
       autoTable(doc, {
         startY: y,
-        body: [['VENDEDOR', raw.vendor_name]],
+        body: [['VENDEDOR', order.vendor_name]],
         theme: 'grid',
         styles: { fontSize: 8.5, cellPadding: 3.5 },
         columnStyles: {
@@ -153,10 +198,10 @@ export async function GET(
     }
 
     // ── Dirección de entrega diferente (resaltado naranja) ─────────────────────
-    if (raw.delivery_address) {
+    if (order.delivery_address) {
       autoTable(doc, {
         startY: y,
-        body: [['ENTREGA EN DIRECCIÓN DIFERENTE', raw.delivery_address]],
+        body: [['ENTREGA EN DIRECCIÓN DIFERENTE', order.delivery_address]],
         theme: 'grid',
         styles: { fontSize: 8.5, cellPadding: 3.5, overflow: 'linebreak' },
         columnStyles: {
@@ -179,10 +224,10 @@ export async function GET(
     }
 
     // ── Notas adicionales (resaltado amarillo) ─────────────────────────────────
-    if (raw.notes) {
+    if (order.notes) {
       autoTable(doc, {
         startY: y,
-        body: [['NOTAS DEL PEDIDO', raw.notes]],
+        body: [['NOTAS DEL PEDIDO', order.notes]],
         theme: 'grid',
         styles: { fontSize: 8.5, cellPadding: 3.5, overflow: 'linebreak' },
         columnStyles: {
@@ -213,37 +258,39 @@ export async function GET(
     y += 3;
 
     const productBody = items.map((item) => {
-      const subtotal = (item.price || 0) * item.quantity;
-      // Si hay notas (variación), agrégalas al nombre
-      const displayName = item.notes ? `${item.name}\n(${item.notes})` : item.name;
+      // Si hay notas (variación) o unidad distinta a "unidad", agrégalas al nombre
+      const extras = [item.unit_type !== 'unidad' ? item.unit_type : null, item.notes].filter(Boolean).join(' · ');
+      const displayName = extras ? `${item.name}\n(${extras})` : item.name;
       return [
         item.ref,
         displayName,
         item.quantity,
-        item.unit_type || 'unidad',
         item.price ? `$${(item.price).toLocaleString('es-CO')}` : '-',
-        `$${subtotal.toLocaleString('es-CO')}`,
+        item.discountPercent ? `${item.discountPercent}%` : '-',
+        item.taxPercent ? `${item.taxPercent}%` : '-',
+        `$${item.subtotal.toLocaleString('es-CO')}`,
+        `$${item.total.toLocaleString('es-CO')}`,
       ];
     });
 
     // Renglón vacío entre la lista y el total
     productBody.push([
-      { content: '', colSpan: 6, styles: { fillColor: [255, 255, 255], minCellHeight: 6 } } as any,
+      { content: '', colSpan: 8, styles: { fillColor: [255, 255, 255], minCellHeight: 6 } } as any,
     ]);
 
     // Fila de total
     productBody.push([
-      '', '', '', '',
+      '', '', '', '', '', '',
       { content: 'TOTAL', styles: { fontStyle: 'bold', halign: 'right' } } as any,
       {
-        content: `$${(raw.total || 0).toLocaleString('es-CO')}`,
+        content: `$${grandTotal.toLocaleString('es-CO')}`,
         styles: { fontStyle: 'bold', textColor: [0, 100, 80] },
       } as any,
     ]);
 
     autoTable(doc, {
       startY: y,
-      head: [['REF', 'Producto', 'Cant.', 'Unidad', 'Precio Unit.', 'Subtotal']],
+      head: [['REF', 'Producto', 'Cant.', 'Precio Unit.', 'Desc.', 'Imp.', 'Subtotal', 'Total']],
       body: productBody,
       theme: 'grid',
       styles: { fontSize: 8, cellPadding: 2.5, overflow: 'linebreak' },
@@ -254,12 +301,14 @@ export async function GET(
         halign: 'center',
       },
       columnStyles: {
-        0: { cellWidth: 28, halign: 'center' },
+        0: { cellWidth: 24, halign: 'center' },
         1: { cellWidth: 'auto' },
-        2: { cellWidth: 16, halign: 'center' },
-        3: { cellWidth: 22, halign: 'center' },
-        4: { cellWidth: 28, halign: 'right' },
-        5: { cellWidth: 28, halign: 'right' },
+        2: { cellWidth: 14, halign: 'center' },
+        3: { cellWidth: 22, halign: 'right' },
+        4: { cellWidth: 14, halign: 'center' },
+        5: { cellWidth: 14, halign: 'center' },
+        6: { cellWidth: 22, halign: 'right' },
+        7: { cellWidth: 24, halign: 'right' },
       },
       alternateRowStyles: { fillColor: [248, 252, 250] },
       margin: { left: margin, right: margin },
@@ -370,7 +419,7 @@ export async function GET(
     return new NextResponse(pdfBuffer, {
       headers: {
         'Content-Type': 'application/pdf',
-        'Content-Disposition': `attachment; filename="pedido-${raw.id}.pdf"`,
+        'Content-Disposition': `attachment; filename="pedido-${order.id}.pdf"`,
         'Cache-Control': 'no-cache',
       },
     });
