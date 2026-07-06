@@ -17,6 +17,65 @@ interface OrderItemUpdate {
   notes?: string;
 }
 
+export async function GET(
+  _request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  try {
+    const { id: orderId } = await params;
+    const { data: order, error } = await getSupabase()
+      .from('orders')
+      .select(`
+        id, customer_id, status, total, vendor_name, delivery_address, notes, created_at,
+        customers (id, name, email, phone, local_name, city, neighborhood, address),
+        order_items (id, product_ref, product_name, quantity, unit_type, notes, price_at_time)
+      `)
+      .eq('id', orderId)
+      .single();
+
+    if (error || !order) {
+      return NextResponse.json({ success: false, message: 'Pedido no encontrado' }, { status: 404 });
+    }
+
+    const customer = (Array.isArray(order.customers) ? order.customers[0] : order.customers) as
+      { id: string; name: string; email: string | null; phone: string | null; local_name: string | null; city: string | null; neighborhood: string | null; address: string | null } | null;
+
+    return NextResponse.json({
+      success: true,
+      order: {
+        id: order.id,
+        customer: customer?.name || 'Sin nombre',
+        email: customer?.email || '',
+        phone: customer?.phone || '',
+        local_name: customer?.local_name || '',
+        city: customer?.city || '',
+        neighborhood: customer?.neighborhood || '',
+        address: customer?.address || '',
+        customer_id: order.customer_id,
+        vendor_name: order.vendor_name || '',
+        delivery_address: order.delivery_address || '',
+        notes: order.notes || '',
+        status: order.status,
+        total: order.total,
+        items: (order.order_items || []).map((oi: { product_ref: string; product_name: string | null; quantity: number; unit_type: string | null; notes: string | null; price_at_time: number }) => ({
+          ref: oi.product_ref,
+          name: oi.product_name || oi.product_ref,
+          quantity: oi.quantity,
+          unit_type: oi.unit_type || 'unidad',
+          notes: oi.notes || undefined,
+          price: oi.price_at_time
+        })),
+      }
+    });
+  } catch (error) {
+    console.error('GET /api/orders/[id] error:', error);
+    return NextResponse.json(
+      { success: false, message: error instanceof Error ? error.message : 'Error obteniendo pedido' },
+      { status: 500 }
+    );
+  }
+}
+
 export async function PUT(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }

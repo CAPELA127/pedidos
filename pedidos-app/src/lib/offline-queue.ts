@@ -103,13 +103,19 @@ export function cacheInventory(products: CachedProduct[]): void {
 }
 
 export function findCachedProduct(ref: string): CachedProduct | null {
-  if (typeof window === 'undefined') return null;
+  return findCachedProducts(ref)[0] || null;
+}
+
+// Una misma referencia puede tener varias presentaciones (ej: x10 caja, x8 unidad)
+// guardadas como filas distintas con el mismo código — hay que devolverlas todas.
+export function findCachedProducts(ref: string): CachedProduct[] {
+  if (typeof window === 'undefined') return [];
   try {
     const raw = localStorage.getItem(INVENTORY_KEY);
-    if (!raw) return null;
+    if (!raw) return [];
     const { products } = JSON.parse(raw) as { products: CachedProduct[] };
-    return products.find(p => p.ref?.toUpperCase() === ref.toUpperCase()) || null;
+    return products.filter(p => p.ref?.toUpperCase() === ref.toUpperCase());
   } catch {
-    return null;
+    return [];
   }
 }

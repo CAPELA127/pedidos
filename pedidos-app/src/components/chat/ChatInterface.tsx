@@ -5,7 +5,7 @@ import { Send, Check, MoreVertical, Phone, ShoppingCart, Search, UserPlus, X, Ca
 import ProductCard from '../ProductCard';
 import { normalizeAddress, validatePhoneNumber } from '@/lib/normalize-address';
 import { saveDraft, loadDraft, clearDraft } from '@/lib/order-draft';
-import { getPendingOrders, enqueueOrder, syncPendingOrders, cacheInventory, findCachedProduct } from '@/lib/offline-queue';
+import { getPendingOrders, enqueueOrder, syncPendingOrders, cacheInventory, findCachedProducts } from '@/lib/offline-queue';
 import { VENDORS } from '@/lib/vendors';
 
 interface OrderItem {
@@ -44,7 +44,14 @@ interface Message {
   content?: string;
   imageUrl?: string;
   timestamp: Date;
-  metadata?: { ref?: string; name?: string; price?: number; pendingQuantity?: boolean; pendingPriceConfirm?: boolean };
+  metadata?: {
+    ref?: string;
+    name?: string;
+    price?: number;
+    pendingQuantity?: boolean;
+    pendingPriceConfirm?: boolean;
+    variantOptions?: { ref: string; name: string; price: number | null }[];
+  };
 }
 
 type ConversationState =
@@ -64,7 +71,33 @@ type ConversationState =
   | 'awaiting_departamento'
   | 'awaiting_address'
   | 'ready'
-  | 'completed';
+  | 'completed'
+  | 'rem_awaiting_order_id'
+  | 'rem_awaiting_discount'
+  | 'rem_awaiting_freight'
+  | 'rem_awaiting_returns_value'
+  | 'rem_awaiting_returns_reason'
+  | 'rem_confirming'
+  | 'rem_done';
+
+type ChatMode = 'pedido' | 'remision';
+
+interface RemissionOrderItem {
+  ref: string;
+  name: string;
+  quantity: number;
+  price?: number;
+  unit_type?: string;
+}
+
+interface RemissionOrder {
+  id: string;
+  customer: string;
+  phone: string;
+  vendor_name: string;
+  items: RemissionOrderItem[];
+  total: number;
+}
 
 interface CustomerData {
   name: string;
@@ -124,6 +157,13 @@ export default function ChatInterface() {
   const [isSending, setIsSending] = useState(false);
   const [orderItems, setOrderItems] = useState<OrderItem[]>([]);
   const [conversationState, setConversationState] = useState<ConversationState>('awaiting_vendor');
+  const [mode, setMode] = useState<ChatMode>('pedido');
+  const [remOrder, setRemOrder] = useState<RemissionOrder | null>(null);
+  const [remDiscount, setRemDiscount] = useState(0);
+  const [remFreight, setRemFreight] = useState(0);
+  const [remReturnsValue, setRemReturnsValue] = useState(0);
+  const [remReturnsReason, setRemReturnsReason] = useState('');
+  const [remResult, setRemResult] = useState<{ remissionId: string; liquidatedTotal: number } | null>(null);
   const [vendorName, setVendorName] = useState('');
   const [customerData, setCustomerData] = useState<CustomerData>({ name: '', email: '' });
   const [selectedImage, setSelectedImage] = useState<{ url: string } | null>(null);
@@ -166,7 +206,9 @@ export default function ChatInterface() {
   useEffect(() => {
     const draft = loadDraft<OrderDraftData>();
     const d = draft?.data;
-    const hasProgress = !!d && d.conversationState !== 'completed' &&
+    // Los borradores de remisión no se persisten (flujo corto, se hace de una sola sentada) —
+    // si quedó a mitad de camino, mejor empezar de cero que restaurar un estado inconsistente.
+    const hasProgress = !!d && d.conversationState !== 'completed' && !d.conversationState.startsWith('rem_') &&
       (d.vendorName !== '' || d.orderItems.length > 0 || d.conversationState !== 'awaiting_vendor');
 
     if (d && hasProgress) {
@@ -191,6 +233,7 @@ export default function ChatInterface() {
   useEffect(() => {
     if (!draftLoadedRef.current) return;
     if (conversationState === 'completed') return;
+    if (conversationState.startsWith('rem_')) return; // flujo de remisión no se persiste
     const t = setTimeout(() => {
       saveDraft<OrderDraftData>({
         conversationState,
@@ -524,24 +567,37 @@ export default function ChatInterface() {
       // Buscar en inventario (con respaldo en caché local si no hay conexión)
       setIsProcessing(true);
       try {
-        let found: { ref: string; name: string; price?: number | null } | null = null;
+        let matches: { ref: string; name: string; price?: number | null }[] = [];
         let fromCache = false;
 
         if (navigator.onLine) {
           try {
             const res = await fetch(`/api/inventory?q=${encodeURIComponent(refInput)}`);
             const data = await res.json();
-            found = data.products?.find((p: { ref: string }) => p.ref === refInput) || null;
+            matches = (data.products || []).filter((p: { ref: string }) => p.ref === refInput);
           } catch {
-            found = findCachedProduct(refInput);
+            matches = findCachedProducts(refInput);
             fromCache = true;
           }
         } else {
-          found = findCachedProduct(refInput);
+          matches = findCachedProducts(refInput);
           fromCache = true;
         }
 
-        if (found) {
+        const found = matches[0] || null;
+
+        if (matches.length > 1) {
+          // Misma referencia con varias presentaciones (ej: x10 caja, x8 unidad) — dejar elegir
+          setMessages(prev => [...prev, {
+            id: nextMessageId(),
+            type: 'bot',
+            content: `📦 ${refInput} tiene ${matches.length} presentaciones. Elige una:`,
+            timestamp: new Date(),
+            metadata: {
+              variantOptions: matches.map(m => ({ ref: m.ref, name: m.name, price: m.price ?? null }))
+            }
+          }]);
+        } else if (found) {
           // Producto existe en inventario
           setActiveProduct({
             imageUrl: 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22%3E%3Crect fill=%22%23f0f0f0%22 width=%22100%22 height=%22100%22/%3E%3Ctext x=%2250%22 y=%2250%22 font-size=%2224%22 fill=%22%23999%22 text-anchor=%22middle%22 dominant-baseline=%22middle%22%3E📦%3C/text%3E%3C/svg%3E',
@@ -588,15 +644,145 @@ export default function ChatInterface() {
     // ── VENDEDOR ──
     if (conversationState === 'awaiting_vendor') {
       const name = inputText.trim();
+      setVendorName(name);
+      // Mismo nombre que usa el portal del vendedor — mantiene la trazabilidad
+      try { localStorage.setItem('pedidos_vendor_name', name); } catch { /* almacenamiento no disponible */ }
+      setInputText('');
+
+      if (mode === 'remision') {
+        setMessages(prev => [...prev,
+          { id: nextMessageId(), type: 'user', content: name, timestamp: new Date() },
+          { id: nextMessageId(), type: 'bot', content: `¡Listo, ${name}! 🧾 ¿Cuál es el número del pedido que quieres liquidar? (Ej: ORD-1234)`, timestamp: new Date() }
+        ]);
+        setConversationState('rem_awaiting_order_id');
+        return;
+      }
+
       setMessages(prev => [...prev,
         { id: nextMessageId(), type: 'user', content: name, timestamp: new Date() },
         { id: nextMessageId(), type: 'bot', content: `¡Listo, ${name}! 👍 Ahora busca el cliente por NIT/CC o nombre, o regístralo como nuevo.`, timestamp: new Date() }
       ]);
-      setVendorName(name);
-      // Mismo nombre que usa el portal del vendedor — mantiene la trazabilidad
-      try { localStorage.setItem('pedidos_vendor_name', name); } catch { /* almacenamiento no disponible */ }
       setConversationState('awaiting_search');
+      return;
+    }
+
+    // ══════════════ FLUJO DE REMISIÓN (liquidación desde el chat) ══════════════
+
+    // ── NÚMERO DE PEDIDO ──
+    if (conversationState === 'rem_awaiting_order_id') {
+      const raw = inputText.trim().toUpperCase();
+      const orderId = /^ORD-/.test(raw) ? raw : `ORD-${raw}`;
+      setMessages(prev => [...prev, { id: nextMessageId(), type: 'user', content: raw, timestamp: new Date() }]);
       setInputText('');
+      setIsProcessing(true);
+      try {
+        const res = await fetch(`/api/orders/${encodeURIComponent(orderId)}`);
+        const data = await res.json();
+        if (!res.ok || !data.success) {
+          setMessages(prev => [...prev, { id: nextMessageId(), type: 'bot', content: `❌ No encontré el pedido ${orderId}. Verifica el número e intenta de nuevo.`, timestamp: new Date() }]);
+          return;
+        }
+        const order = data.order;
+        setRemOrder({
+          id: order.id,
+          customer: order.customer,
+          phone: order.phone || '',
+          vendor_name: order.vendor_name || vendorName,
+          items: order.items,
+          total: order.total,
+        });
+        const itemsList = order.items.map((i: RemissionOrderItem) => `• ${i.name} ×${i.quantity}`).join('\n');
+        setMessages(prev => [...prev, {
+          id: nextMessageId(),
+          type: 'bot',
+          content: `✅ Pedido ${order.id} — ${order.customer}\n${itemsList}\nSubtotal: COP $${order.total.toLocaleString('es-CO')}\n\n¿Cuál es el descuento? (% — escribe 0 si no aplica)`,
+          timestamp: new Date()
+        }]);
+        setConversationState('rem_awaiting_discount');
+      } catch {
+        setMessages(prev => [...prev, { id: nextMessageId(), type: 'bot', content: '❌ Error buscando el pedido. Intenta de nuevo.', timestamp: new Date() }]);
+      } finally {
+        setIsProcessing(false);
+      }
+      return;
+    }
+
+    // ── DESCUENTO (%) ──
+    if (conversationState === 'rem_awaiting_discount') {
+      const value = parseFloat(inputText.trim().replace(',', '.'));
+      setMessages(prev => [...prev, { id: nextMessageId(), type: 'user', content: inputText.trim(), timestamp: new Date() }]);
+      setInputText('');
+      if (isNaN(value) || value < 0 || value > 100) {
+        setMessages(prev => [...prev, { id: nextMessageId(), type: 'bot', content: '❌ Escribe un porcentaje válido entre 0 y 100.', timestamp: new Date() }]);
+        return;
+      }
+      setRemDiscount(value);
+      setMessages(prev => [...prev, { id: nextMessageId(), type: 'bot', content: '¿Cuál es el valor del flete? (COP — escribe 0 si no aplica)', timestamp: new Date() }]);
+      setConversationState('rem_awaiting_freight');
+      return;
+    }
+
+    // ── FLETE ($) ──
+    if (conversationState === 'rem_awaiting_freight') {
+      const value = parseFloat(inputText.trim().replace(/\./g, '').replace(',', '.'));
+      setMessages(prev => [...prev, { id: nextMessageId(), type: 'user', content: inputText.trim(), timestamp: new Date() }]);
+      setInputText('');
+      if (isNaN(value) || value < 0) {
+        setMessages(prev => [...prev, { id: nextMessageId(), type: 'bot', content: '❌ Escribe un valor válido (0 si no hay flete).', timestamp: new Date() }]);
+        return;
+      }
+      setRemFreight(value);
+      setMessages(prev => [...prev, { id: nextMessageId(), type: 'bot', content: '¿Hay devoluciones o daños? Escribe el valor en COP (0 si no aplica)', timestamp: new Date() }]);
+      setConversationState('rem_awaiting_returns_value');
+      return;
+    }
+
+    // ── DEVOLUCIONES/DAÑOS ($) ──
+    if (conversationState === 'rem_awaiting_returns_value') {
+      const value = parseFloat(inputText.trim().replace(/\./g, '').replace(',', '.'));
+      setMessages(prev => [...prev, { id: nextMessageId(), type: 'user', content: inputText.trim(), timestamp: new Date() }]);
+      setInputText('');
+      if (isNaN(value) || value < 0) {
+        setMessages(prev => [...prev, { id: nextMessageId(), type: 'bot', content: '❌ Escribe un valor válido (0 si no hay devoluciones/daños).', timestamp: new Date() }]);
+        return;
+      }
+      setRemReturnsValue(value);
+      if (value > 0) {
+        setMessages(prev => [...prev, { id: nextMessageId(), type: 'bot', content: '¿Cuál es el motivo de la devolución o daño?', timestamp: new Date() }]);
+        setConversationState('rem_awaiting_returns_reason');
+        return;
+      }
+      setRemReturnsReason('');
+      askRemConfirmation(remOrder, remDiscount, remFreight, value, '');
+      return;
+    }
+
+    // ── MOTIVO DE DEVOLUCIÓN ──
+    if (conversationState === 'rem_awaiting_returns_reason') {
+      const reason = inputText.trim();
+      setMessages(prev => [...prev, { id: nextMessageId(), type: 'user', content: reason, timestamp: new Date() }]);
+      setInputText('');
+      if (!reason) {
+        setMessages(prev => [...prev, { id: nextMessageId(), type: 'bot', content: '❌ Escribe el motivo de la devolución o daño.', timestamp: new Date() }]);
+        return;
+      }
+      setRemReturnsReason(reason);
+      askRemConfirmation(remOrder, remDiscount, remFreight, remReturnsValue, reason);
+      return;
+    }
+
+    // ── CONFIRMACIÓN FINAL (rectifica el vendedor) ──
+    if (conversationState === 'rem_confirming') {
+      const resp = inputText.trim();
+      setMessages(prev => [...prev, { id: nextMessageId(), type: 'user', content: resp, timestamp: new Date() }]);
+      setInputText('');
+
+      if (/^(si|sí|s|ok|yes|y|claro|listo|dale|confirmo|correcto)$/i.test(resp)) {
+        await submitRemision();
+      } else {
+        setMessages(prev => [...prev, { id: nextMessageId(), type: 'bot', content: '¿Cuál es el número del pedido que quieres liquidar? (Ej: ORD-1234)', timestamp: new Date() }]);
+        setConversationState('rem_awaiting_order_id');
+      }
       return;
     }
 
@@ -989,6 +1175,17 @@ export default function ChatInterface() {
     }]);
   };
 
+  const handleSelectVariant = (option: { ref: string; name: string; price: number | null }) => {
+    setMessages(prev => [...prev, { id: nextMessageId(), type: 'user', content: option.name, timestamp: new Date() }]);
+    setActiveProduct({
+      imageUrl: 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22%3E%3Crect fill=%22%23f0f0f0%22 width=%22100%22 height=%22100%22/%3E%3Ctext x=%2250%22 y=%2250%22 font-size=%2224%22 fill=%22%23999%22 text-anchor=%22middle%22 dominant-baseline=%22middle%22%3E📦%3C/text%3E%3C/svg%3E',
+      ref: option.ref,
+      name: option.name,
+      price: option.price ?? undefined,
+      isNew: false
+    });
+  };
+
   const handleProductCardAdd = async (quantity: number, price: number, name: string, ref: string, notes?: string, unit_type?: string) => {
     if (!activeProduct) return;
     const finalRef = ref || activeProduct.ref;
@@ -996,8 +1193,10 @@ export default function ChatInterface() {
     const finalUnitType = (unit_type || 'unidad') as 'unidad' | 'docena' | 'box';
 
     setOrderItems(prev => {
+      // Misma referencia puede tener presentaciones distintas (ej: x10 caja, x8 unidad) —
+      // solo fusionar cuando ref, nombre Y notas coinciden, para no mezclar variantes.
       const existing = prev.find(i =>
-        i.ref === finalRef && (i.notes || '').trim().toLowerCase() === notesKey
+        i.ref === finalRef && i.name === name && (i.notes || '').trim().toLowerCase() === notesKey
       );
       if (existing) {
         return prev.map(i => i.itemId === existing.itemId ? { ...i, name, quantity, price, notes: notes || undefined, unit_type: finalUnitType } : i);
@@ -1133,6 +1332,90 @@ export default function ChatInterface() {
     }
   };
 
+  const askRemConfirmation = (
+    order: RemissionOrder | null,
+    discount: number,
+    freight: number,
+    returnsValue: number,
+    returnsReason: string
+  ) => {
+    if (!order) return;
+    const discountAmount = Math.round(order.total * discount / 100);
+    const liquidatedTotal = order.total - discountAmount - freight - returnsValue;
+    const lines = [
+      `📋 Resumen de la remisión ${order.id}:`,
+      `Subtotal: COP $${order.total.toLocaleString('es-CO')}`,
+      discount > 0 ? `Descuento (${discount}%): -COP $${discountAmount.toLocaleString('es-CO')}` : null,
+      freight > 0 ? `Flete: -COP $${freight.toLocaleString('es-CO')}` : null,
+      returnsValue > 0 ? `Devoluciones/daños (${returnsReason}): -COP $${returnsValue.toLocaleString('es-CO')}` : null,
+      `Total a cobrar: COP $${liquidatedTotal.toLocaleString('es-CO')}`,
+      '',
+      `¿Confirmas estos datos, ${vendorName}? (sí / no)`
+    ].filter(Boolean);
+    setMessages(prev => [...prev, { id: nextMessageId(), type: 'bot', content: lines.join('\n'), timestamp: new Date() }]);
+    setConversationState('rem_confirming');
+  };
+
+  const submitRemision = async () => {
+    if (!remOrder) return;
+    setIsSending(true);
+    try {
+      const remissionItems = remOrder.items.map(i => ({
+        ref: i.ref,
+        name: i.name,
+        ordered_quantity: i.quantity,
+        packed_quantity: i.quantity,
+        price: i.price || 0,
+        unit_type: i.unit_type || 'unidad',
+        status: 'completo' as const,
+      }));
+
+      const createRes = await fetch(`/api/orders/${remOrder.id}/remission`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ items: remissionItems, packing: { packer_name: vendorName } })
+      });
+      const createData = await createRes.json();
+      if (!createRes.ok || !createData.success) throw new Error(createData.message || 'Error creando la remisión');
+
+      const remissionId = createData.remission.id;
+      const liqRes = await fetch(`/api/remissions/${remissionId}/liquidate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          discount_percent: remDiscount,
+          freight_value: remFreight,
+          returns_value: remReturnsValue,
+          returns_reason: remReturnsReason || null,
+        })
+      });
+      const liqData = await liqRes.json();
+      if (!liqRes.ok || !liqData.success) throw new Error(liqData.message || 'Error liquidando la remisión');
+
+      const liquidatedTotal = liqData.remission.liquidated_total ?? 0;
+      setRemResult({ remissionId, liquidatedTotal });
+
+      const origin = typeof window !== 'undefined' ? window.location.origin : '';
+      const pdfUrl = `${origin}/api/remissions/${remissionId}/liquidated-pdf`;
+      setMessages(prev => [...prev, {
+        id: nextMessageId(),
+        type: 'bot',
+        content: `✅ Remisión ${remissionId} liquidada. Total a cobrar: COP $${liquidatedTotal.toLocaleString('es-CO')}\n\n📄 PDF: ${pdfUrl}`,
+        timestamp: new Date()
+      }]);
+      setConversationState('rem_done');
+    } catch (err) {
+      setMessages(prev => [...prev, {
+        id: nextMessageId(),
+        type: 'bot',
+        content: `❌ ${err instanceof Error ? err.message : 'No se pudo liquidar la remisión'}. Intenta de nuevo.`,
+        timestamp: new Date()
+      }]);
+    } finally {
+      setIsSending(false);
+    }
+  };
+
   const handleNuevoPedido = () => {
     clearDraft();
     setShowDraftBanner(false);
@@ -1151,6 +1434,18 @@ export default function ChatInterface() {
     setInputText('');
     setSearchQuery('');
     setSearchResults([]);
+    setMode('pedido');
+    setRemOrder(null);
+    setRemDiscount(0);
+    setRemFreight(0);
+    setRemReturnsValue(0);
+    setRemReturnsReason('');
+    setRemResult(null);
+  };
+
+  const handleSelectMode = (newMode: ChatMode) => {
+    if (conversationState !== 'awaiting_vendor') return;
+    setMode(newMode);
   };
 
   const inputPlaceholder =
@@ -1168,10 +1463,17 @@ export default function ChatInterface() {
     conversationState === 'awaiting_city' ? 'Ciudad...' :
     conversationState === 'awaiting_departamento' ? 'Departamento...' :
     conversationState === 'awaiting_address' ? 'Dirección completa...' :
+    conversationState === 'rem_awaiting_order_id' ? 'Ej: ORD-1234 o 1234...' :
+    conversationState === 'rem_awaiting_discount' ? 'Descuento % (0 si no aplica)...' :
+    conversationState === 'rem_awaiting_freight' ? 'Valor del flete (0 si no aplica)...' :
+    conversationState === 'rem_awaiting_returns_value' ? 'Valor devoluciones/daños (0 si no aplica)...' :
+    conversationState === 'rem_awaiting_returns_reason' ? 'Motivo de la devolución o daño...' :
+    conversationState === 'rem_confirming' ? 'sí / no...' :
     'Cantidad, número o mensaje...';
 
-  const showInput = conversationState !== 'awaiting_search';
-  const showSearchPanel = conversationState !== 'ready' && conversationState !== 'awaiting_vendor';
+  const isRemisionMode = mode === 'remision';
+  const showInput = conversationState !== 'awaiting_search' && conversationState !== 'rem_done';
+  const showSearchPanel = !isRemisionMode && conversationState !== 'ready' && conversationState !== 'awaiting_vendor';
 
   return (
     <div className="flex flex-col w-full bg-[#efeae2] relative overflow-x-hidden" style={{ height: '100dvh' }} onPaste={handlePasteImage}>
@@ -1184,7 +1486,7 @@ export default function ChatInterface() {
             <p className="text-xs text-white/80">
               {!isOnline
                 ? '📴 Sin conexión — modo offline'
-                : vendorName ? `Vendedor: ${vendorName}` : 'en línea'}
+                : vendorName ? `Vendedor: ${vendorName}${isRemisionMode ? ' · 🧾 Remisión' : ''}` : 'en línea'}
             </p>
           </div>
         </div>
@@ -1202,6 +1504,30 @@ export default function ChatInterface() {
           <MoreVertical size={20} className="opacity-80" />
         </div>
       </header>
+
+      {/* Toggle Pedido / Remisión — solo antes de identificar al vendedor */}
+      {conversationState === 'awaiting_vendor' && (
+        <div className="bg-white border-b border-gray-100 px-3 py-2.5 z-10 shadow-sm">
+          <div className="flex bg-gray-100 rounded-full p-1">
+            <button
+              onClick={() => handleSelectMode('pedido')}
+              className={`flex-1 text-sm font-semibold py-1.5 rounded-full transition-all ${
+                mode === 'pedido' ? 'bg-[#00a884] text-white shadow-sm' : 'text-gray-500'
+              }`}
+            >
+              📦 Tomar pedido
+            </button>
+            <button
+              onClick={() => handleSelectMode('remision')}
+              className={`flex-1 text-sm font-semibold py-1.5 rounded-full transition-all ${
+                mode === 'remision' ? 'bg-blue-600 text-white shadow-sm' : 'text-gray-500'
+              }`}
+            >
+              🧾 Liquidar remisión
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Banner borrador recuperado */}
       {showDraftBanner && (
@@ -1342,6 +1668,23 @@ export default function ChatInterface() {
                 {msg.content && (
                   <p className="text-sm text-gray-800 whitespace-pre-wrap leading-snug">{msg.content}</p>
                 )}
+                {msg.metadata?.variantOptions && (
+                  <div className="mt-2 space-y-1.5">
+                    {msg.metadata.variantOptions.map((opt, i) => (
+                      <button
+                        key={`${opt.ref}-${i}`}
+                        onClick={() => handleSelectVariant(opt)}
+                        disabled={!!activeProduct}
+                        className="w-full text-left bg-[#f0fdf8] border border-[#00a884]/30 rounded-lg px-3 py-2 hover:bg-[#dcfce7] active:scale-[0.98] transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        <p className="text-sm font-medium text-gray-800 leading-snug">{opt.name}</p>
+                        <p className="text-xs text-[#00a884] font-semibold mt-0.5">
+                          {opt.ref} · {opt.price != null ? `COP $${opt.price.toLocaleString('es-CO')}` : 'Sin precio'}
+                        </p>
+                      </button>
+                    ))}
+                  </div>
+                )}
                 <div className="flex justify-end items-center gap-1 mt-0.5">
                   <span className="text-[10px] text-gray-400">
                     {msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
@@ -1391,44 +1734,77 @@ export default function ChatInterface() {
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Order Summary Bar */}
-      <div className="bg-white border-t border-gray-100 px-3 py-2 flex justify-between items-center shadow-md flex-wrap gap-2">
-        <button
-          onClick={() => orderItems.length > 0 && setShowCartDrawer(true)}
-          className={`flex items-center gap-1.5 text-sm text-gray-600 ${orderItems.length > 0 ? 'active:scale-95 transition-transform cursor-pointer' : 'cursor-default'}`}
-        >
-          <ShoppingCart size={16} className="text-[#00a884]" />
-          <span className="font-medium text-[#00a884]">{orderItems.length}</span>
-          <span>{orderItems.length === 1 ? 'producto' : 'productos'}</span>
-          {orderItems.length > 0 && (
-            <span className="text-gray-400">({orderItems.reduce((s, i) => s + i.quantity, 0)} und)</span>
+      {/* Order Summary Bar (modo pedido) */}
+      {!isRemisionMode && (
+        <div className="bg-white border-t border-gray-100 px-3 py-2 flex justify-between items-center shadow-md flex-wrap gap-2">
+          <button
+            onClick={() => orderItems.length > 0 && setShowCartDrawer(true)}
+            className={`flex items-center gap-1.5 text-sm text-gray-600 ${orderItems.length > 0 ? 'active:scale-95 transition-transform cursor-pointer' : 'cursor-default'}`}
+          >
+            <ShoppingCart size={16} className="text-[#00a884]" />
+            <span className="font-medium text-[#00a884]">{orderItems.length}</span>
+            <span>{orderItems.length === 1 ? 'producto' : 'productos'}</span>
+            {orderItems.length > 0 && (
+              <span className="text-gray-400">({orderItems.reduce((s, i) => s + i.quantity, 0)} und)</span>
+            )}
+            {orderItems.some(i => i.price) && (
+              <span className="text-[#00a884] font-semibold ml-2">
+                COP ${orderItems.reduce((total, i) => total + ((i.price || 0) * i.quantity), 0).toLocaleString('es-CO')}
+              </span>
+            )}
+            {orderItems.length > 0 && (
+              <span className="text-[10px] text-gray-400 ml-1 underline underline-offset-2">editar</span>
+            )}
+          </button>
+          <button
+            onClick={() => {
+              if (orderItems.length === 0 || conversationState !== 'ready') return;
+              setModalDeliveryAddress('');
+              setModalNotes('');
+              setShowConfirmModal(true);
+            }}
+            disabled={isSending || orderItems.length === 0 || conversationState !== 'ready'}
+            className={`text-sm px-4 py-1.5 rounded-full font-semibold transition-all shadow-sm ${
+              orderItems.length > 0 && conversationState === 'ready'
+                ? 'bg-[#00a884] text-white hover:bg-[#008f6f] active:scale-95'
+                : 'bg-gray-200 text-gray-400 cursor-not-allowed'
+            }`}
+          >
+            {isSending ? 'Enviando...' : 'Confirmar Pedido'}
+          </button>
+        </div>
+      )}
+
+      {/* Barra de acciones al terminar una remisión */}
+      {isRemisionMode && conversationState === 'rem_done' && remResult && (
+        <div className="bg-white border-t border-gray-100 px-3 py-2.5 flex flex-wrap gap-2 shadow-md">
+          <a
+            href={`/api/remissions/${remResult.remissionId}/liquidated-pdf`}
+            download={`remision-liquidada-${remResult.remissionId}.pdf`}
+            className="flex-1 text-center text-sm px-4 py-2 rounded-full font-semibold bg-blue-600 text-white hover:bg-blue-700 transition-colors"
+          >
+            📄 Descargar PDF
+          </a>
+          {remOrder?.phone && (
+            <a
+              href={`https://wa.me/57${remOrder.phone.replace(/\D/g, '').replace(/^57/, '')}?text=${encodeURIComponent(
+                `Hola ${remOrder.customer}, adjunto la remisión liquidada de tu pedido ${remOrder.id}:\n${window.location.origin}/api/remissions/${remResult.remissionId}/liquidated-pdf\nTotal: COP $${remResult.liquidatedTotal.toLocaleString('es-CO')}`
+              )}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex-1 text-center text-sm px-4 py-2 rounded-full font-semibold bg-green-600 text-white hover:bg-green-700 transition-colors"
+            >
+              💬 Enviar al cliente
+            </a>
           )}
-          {orderItems.some(i => i.price) && (
-            <span className="text-[#00a884] font-semibold ml-2">
-              COP ${orderItems.reduce((total, i) => total + ((i.price || 0) * i.quantity), 0).toLocaleString('es-CO')}
-            </span>
-          )}
-          {orderItems.length > 0 && (
-            <span className="text-[10px] text-gray-400 ml-1 underline underline-offset-2">editar</span>
-          )}
-        </button>
-        <button
-          onClick={() => {
-            if (orderItems.length === 0 || conversationState !== 'ready') return;
-            setModalDeliveryAddress('');
-            setModalNotes('');
-            setShowConfirmModal(true);
-          }}
-          disabled={isSending || orderItems.length === 0 || conversationState !== 'ready'}
-          className={`text-sm px-4 py-1.5 rounded-full font-semibold transition-all shadow-sm ${
-            orderItems.length > 0 && conversationState === 'ready'
-              ? 'bg-[#00a884] text-white hover:bg-[#008f6f] active:scale-95'
-              : 'bg-gray-200 text-gray-400 cursor-not-allowed'
-          }`}
-        >
-          {isSending ? 'Enviando...' : 'Confirmar Pedido'}
-        </button>
-      </div>
+          <button
+            onClick={handleNuevoPedido}
+            className="text-sm px-4 py-2 rounded-full font-semibold border border-gray-300 text-gray-600 hover:bg-gray-50 transition-colors"
+          >
+            Nuevo
+          </button>
+        </div>
+      )}
 
       {/* Bottom bar — cámara + archivo + texto + enviar en una sola fila */}
       <div

@@ -61,11 +61,14 @@ export async function GET(req: Request) {
       .or(`Referencia.ilike.%${q}%,Producto.ilike.%${q}%`)
       .limit(10);
 
-    // Combinar y deduplicar por Referencia
+    // Combinar y deduplicar por Referencia + Producto (no solo Referencia):
+    // una misma referencia puede tener varias presentaciones (ej: x10 caja, x8 unidad)
+    // guardadas como filas distintas con el mismo código pero nombre diferente.
     const seen = new Set<string>();
     const all = [...(exact || []), ...(fuzzy || [])].filter((row: any) => {
-      if (seen.has(row.Referencia)) return false;
-      seen.add(row.Referencia);
+      const key = `${row.Referencia}::${row.Producto}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
       return true;
     });
 

@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Search, Download, CheckCircle, Package, Truck, RefreshCw, X, Edit2, Save, LayoutGrid, Plus, Camera } from 'lucide-react';
+import { Search, Download, CheckCircle, Package, Truck, RefreshCw, X, Edit2, Save, LayoutGrid, Plus, Camera, Copy } from 'lucide-react';
 import RemissionModal from './RemissionModal';
 
 interface OrderItem {
@@ -48,6 +48,21 @@ interface Order {
   date: string;
   total: number;
   total_items: number;
+  vendor_name?: string;
+  delivery_address?: string;
+  notes?: string;
+}
+
+interface DupCustomerResult {
+  id: string;
+  name: string;
+  email?: string;
+  cc_nit?: string;
+  phone?: string;
+  local_name?: string;
+  city?: string;
+  neighborhood?: string;
+  address?: string;
 }
 
 export default function Dashboard() {
@@ -63,6 +78,16 @@ export default function Dashboard() {
   const [orderRemissions, setOrderRemissions] = useState<OrderRemission[]>([]);
   const [liqDrafts, setLiqDrafts] = useState<Record<string, LiquidationDraft>>({});
   const [liquidatingId, setLiquidatingId] = useState<string | null>(null);
+
+  // ── Duplicar pedido (mismo pedido para otro cliente/local) ──
+  const [duplicateSource, setDuplicateSource] = useState<Order | null>(null);
+  const [dupCustomerQuery, setDupCustomerQuery] = useState('');
+  const [dupCustomerResults, setDupCustomerResults] = useState<DupCustomerResult[]>([]);
+  const [dupCustomerLoading, setDupCustomerLoading] = useState(false);
+  const [dupSelectedCustomer, setDupSelectedCustomer] = useState<DupCustomerResult | null>(null);
+  const [dupManualName, setDupManualName] = useState('');
+  const [isDuplicating, setIsDuplicating] = useState(false);
+  const dupSearchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // ── Agregar producto nuevo al pedido ──
   const [newRef, setNewRef] = useState('');
@@ -271,6 +296,83 @@ export default function Dashboard() {
     }
   };
 
+  // ── Duplicar pedido ──
+  const openDuplicateModal = (order: Order) => {
+    setDuplicateSource(order);
+    setDupCustomerQuery('');
+    setDupCustomerResults([]);
+    setDupSelectedCustomer(null);
+    setDupManualName('');
+  };
+
+  const closeDuplicateModal = () => {
+    setDuplicateSource(null);
+    setDupCustomerQuery('');
+    setDupCustomerResults([]);
+    setDupSelectedCustomer(null);
+    setDupManualName('');
+  };
+
+  const handleDupCustomerSearch = (value: string) => {
+    setDupCustomerQuery(value);
+    setDupSelectedCustomer(null);
+    if (dupSearchTimeoutRef.current) clearTimeout(dupSearchTimeoutRef.current);
+    if (value.trim().length < 2) { setDupCustomerResults([]); return; }
+    setDupCustomerLoading(true);
+    dupSearchTimeoutRef.current = setTimeout(async () => {
+      try {
+        const res = await fetch(`/api/customers?q=${encodeURIComponent(value.trim())}`);
+        const data = await res.json();
+        setDupCustomerResults(data.customers || []);
+      } catch { setDupCustomerResults([]); }
+      finally { setDupCustomerLoading(false); }
+    }, 280);
+  };
+
+  const submitDuplicate = async () => {
+    if (!duplicateSource) return;
+    const customer = dupSelectedCustomer;
+    const manualName = dupManualName.trim();
+    if (!customer && !manualName) {
+      alert('Selecciona un cliente existente o escribe el nombre del nuevo local/cliente');
+      return;
+    }
+
+    setIsDuplicating(true);
+    try {
+      const payload = {
+        customer: customer?.name || manualName,
+        email: customer?.email || '',
+        customer_id: customer?.id,
+        cc_nit: customer?.cc_nit,
+        phone: customer?.phone,
+        local_name: customer?.local_name,
+        city: customer?.city,
+        neighborhood: customer?.neighborhood,
+        address: customer?.address,
+        vendor_name: duplicateSource.vendor_name,
+        delivery_address: customer?.address || duplicateSource.delivery_address,
+        notes: duplicateSource.notes,
+        items: duplicateSource.items,
+      };
+      const res = await fetch('/api/orders', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.message || 'Error al duplicar el pedido');
+
+      alert(`✅ Pedido duplicado como ${data.order.id} para ${payload.customer}`);
+      closeDuplicateModal();
+      fetchOrders();
+    } catch (error) {
+      alert(`❌ ${error instanceof Error ? error.message : 'No se pudo duplicar el pedido'}`);
+    } finally {
+      setIsDuplicating(false);
+    }
+  };
+
   const filtered = orders.filter(o => {
     const matchesTab = activeTab === 'Todos' || o.status === activeTab;
     const matchesSearch = !search ||
@@ -337,8 +439,10 @@ export default function Dashboard() {
     if (!qty || qty <= 0) { alert('Ingresa una cantidad válida'); return; }
     if (!price || price <= 0) { alert('Ingresa un precio válido'); return; }
     setEditingItems(prev => {
-      const existing = prev.find(i => i.ref === ref);
-      if (existing) return prev.map(i => i.ref === ref ? { ...i, quantity: i.quantity + qty } : i);
+      // Misma referencia puede tener presentaciones distintas (nombre distinto) —
+      // solo fusionar cantidades cuando ref Y nombre coinciden.
+      const existing = prev.find(i => i.ref === ref && i.name === name);
+      if (existing) return prev.map(i => (i.ref === ref && i.name === name) ? { ...i, quantity: i.quantity + qty } : i);
       return [...prev, { ref, name, quantity: qty, price }];
     });
     setNewRef(''); setNewName(''); setNewPrice(''); setNewQty('1');
@@ -483,6 +587,13 @@ export default function Dashboard() {
                           >
                             <Edit2 size={11} />
                             Editar
+                          </button>
+                          <button
+                            onClick={() => openDuplicateModal(order)}
+                            className="text-xs bg-amber-50 text-amber-600 border border-amber-200 px-2.5 py-1.5 rounded-lg hover:bg-amber-100 transition-colors font-medium inline-flex items-center justify-center gap-1 whitespace-nowrap"
+                          >
+                            <Copy size={11} />
+                            Duplicar
                           </button>
                           {(activeTab === 'Pendiente' || activeTab === 'Todos') && order.status === 'Pendiente' && (
                             <button
@@ -809,9 +920,9 @@ export default function Dashboard() {
                       {suggestionsLoading ? (
                         <div className="p-3 text-center text-xs text-gray-400">Buscando...</div>
                       ) : suggestions.length > 0 ? (
-                        suggestions.map(p => (
+                        suggestions.map((p, i) => (
                           <button
-                            key={p.ref}
+                            key={`${p.ref}-${p.name}-${i}`}
                             onMouseDown={() => handleSelectSuggestion(p)}
                             className="w-full text-left px-4 py-2.5 hover:bg-[#f0fdf8] border-b border-gray-50 last:border-0 transition-colors"
                           >
@@ -925,6 +1036,12 @@ export default function Dashboard() {
                 >
                   <Camera size={14} /> Crear remisión
                 </button>
+                <button
+                  onClick={() => openDuplicateModal(selectedOrder)}
+                  className="px-4 py-2 bg-amber-50 text-amber-600 border border-amber-200 rounded-lg text-sm font-medium hover:bg-amber-100 flex items-center gap-1.5"
+                >
+                  <Copy size={14} /> Duplicar pedido
+                </button>
                 <button onClick={closeModal} className="px-4 py-2 border rounded-lg text-gray-700 text-sm font-medium hover:bg-gray-50">
                   Cerrar
                 </button>
@@ -970,6 +1087,103 @@ export default function Dashboard() {
             loadOrderRemissions(remissionOrder.id);
           }}
         />
+      )}
+
+      {/* Modal duplicar pedido */}
+      {duplicateSource && (
+        <div className="fixed inset-0 bg-black/50 flex items-end sm:items-center justify-center z-50 p-0 sm:p-4">
+          <div className="bg-white rounded-t-2xl sm:rounded-2xl shadow-xl w-full sm:max-w-md max-h-[92vh] overflow-auto">
+            <div className="sticky top-0 bg-white border-b p-4 sm:p-6 flex justify-between items-start">
+              <div>
+                <h2 className="text-lg font-bold text-gray-800">Duplicar {duplicateSource.id}</h2>
+                <p className="text-sm text-gray-500 mt-0.5">
+                  {duplicateSource.items.length} producto(s) · {duplicateSource.total_items} und · ${duplicateSource.total.toLocaleString('es-CO')}
+                </p>
+              </div>
+              <button onClick={closeDuplicateModal} className="text-gray-400 hover:text-gray-600 p-2">
+                <X size={20} />
+              </button>
+            </div>
+
+            <div className="p-4 sm:p-6 space-y-4">
+              <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-xs text-amber-700">
+                Se creará un pedido nuevo con los mismos productos y cantidades, para otro cliente o local (ej: otra sucursal del mismo cliente).
+              </div>
+
+              <div className="relative">
+                <label className="text-xs text-gray-500 font-medium block mb-1">Buscar cliente/local existente</label>
+                <input
+                  type="text"
+                  value={dupCustomerQuery}
+                  onChange={e => handleDupCustomerSearch(e.target.value)}
+                  placeholder="Nombre, NIT/CC..."
+                  className="w-full px-3 py-2 border rounded-lg text-sm focus:outline-none focus:border-[#00a884]"
+                />
+                {dupCustomerQuery.length >= 2 && !dupSelectedCustomer && (
+                  <div className="mt-1 bg-white rounded-xl shadow-lg border border-gray-100 max-h-44 overflow-y-auto">
+                    {dupCustomerLoading ? (
+                      <div className="p-3 text-center text-xs text-gray-400">Buscando...</div>
+                    ) : dupCustomerResults.length > 0 ? (
+                      dupCustomerResults.map(c => (
+                        <button
+                          key={c.id}
+                          onClick={() => { setDupSelectedCustomer(c); setDupCustomerQuery(c.name); setDupCustomerResults([]); }}
+                          className="w-full text-left px-4 py-2.5 hover:bg-[#f0fdf8] border-b border-gray-50 last:border-0 transition-colors"
+                        >
+                          <p className="text-sm font-medium text-gray-800">{c.name}</p>
+                          <p className="text-xs text-gray-500">{[c.local_name, c.address].filter(Boolean).join(' · ') || c.cc_nit || 'Sin datos adicionales'}</p>
+                        </button>
+                      ))
+                    ) : (
+                      <div className="p-3 text-center text-xs text-gray-400">Sin resultados</div>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {dupSelectedCustomer ? (
+                <div className="bg-green-50 border border-green-200 rounded-lg p-3 flex justify-between items-start gap-2">
+                  <div className="text-sm">
+                    <p className="font-semibold text-gray-800">{dupSelectedCustomer.name}</p>
+                    <p className="text-xs text-gray-500">{[dupSelectedCustomer.local_name, dupSelectedCustomer.address].filter(Boolean).join(' · ')}</p>
+                  </div>
+                  <button
+                    onClick={() => { setDupSelectedCustomer(null); setDupCustomerQuery(''); }}
+                    className="text-xs text-red-500 hover:text-red-700 font-medium flex-shrink-0"
+                  >
+                    Cambiar
+                  </button>
+                </div>
+              ) : (
+                <div>
+                  <label className="text-xs text-gray-500 font-medium block mb-1">
+                    O escribe el nombre de un cliente/local nuevo
+                  </label>
+                  <input
+                    type="text"
+                    value={dupManualName}
+                    onChange={e => setDupManualName(e.target.value)}
+                    placeholder="Ej: Panadería La Esperanza - Sede 2"
+                    className="w-full px-3 py-2 border rounded-lg text-sm focus:outline-none focus:border-[#00a884]"
+                  />
+                </div>
+              )}
+            </div>
+
+            <div className="border-t bg-white p-4 sm:p-6 flex gap-2 justify-end">
+              <button onClick={closeDuplicateModal} className="px-4 py-2 border rounded-lg text-gray-700 text-sm font-medium hover:bg-gray-50">
+                Cancelar
+              </button>
+              <button
+                onClick={submitDuplicate}
+                disabled={isDuplicating || (!dupSelectedCustomer && !dupManualName.trim())}
+                className="px-4 py-2 bg-[#00a884] text-white rounded-lg text-sm font-medium hover:bg-[#008f6f] disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
+              >
+                {isDuplicating ? 'Duplicando...' : <><Copy size={14} /> Duplicar pedido</>}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
