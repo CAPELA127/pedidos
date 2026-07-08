@@ -4,21 +4,23 @@ import { getSupabase } from '@/lib/supabase-server';
 
 export const dynamic = 'force-dynamic';
 
-// Mismos encabezados y fórmulas que "plantilla-importar-documento.xlsx" —
+// Mismos encabezados y orden que "facturaA-971.xlsx" (formato real de facturación) —
 // la secretaría importa este archivo directo al sistema contable, así que
-// el formato debe calzar exactamente (nombres de columna, orden, fórmulas).
+// el formato debe calzar exactamente (nombres de columna, orden).
 const HEADERS = [
-  'Referencia o codigo de barras',
+  'Referencia/Cod. Barras',
+  'Cod. Barras',
   'Nombre',
-  'Precio Unitario',
   'Cantidad',
+  'Unidad de Medida',
+  'Precio Unitario',
   'Descuento',
   'Impuesto',
-  'SubTotal (No modificar)',
-  'Estampilla(sino Aplica 0)',
-  'Impoconsumo(sino Aplica 0)',
-  'Total (No modificar)',
-  'id_plan_cuenta (opcional solo Egresos)',
+  'Total',
+  'Atributo',
+  'Costo',
+  'Costo_real',
+  'cantidad_develta',
 ];
 
 export async function GET(
@@ -31,13 +33,13 @@ export async function GET(
 
     const { data: order, error } = await supabase
       .from('orders')
-      .select('id, order_items (product_ref, product_name, quantity, price_at_time, discount_percent, tax_percent, estampilla, impoconsumo, id_plan_cuenta)')
+      .select('id, order_items (product_ref, product_name, quantity, unit_type, notes, price_at_time, discount_percent, tax_percent, barcode, cost, real_cost, returned_quantity)')
       .eq('id', orderId)
       .single();
 
     if (error?.code === '42703') {
       return NextResponse.json(
-        { error: 'Falta correr la migración ADD_SECRETARIA_ACCOUNTING_FIELDS.sql en Supabase.' },
+        { error: 'Falta correr la migración ADD_SECRETARIA_FACTURA_FIELDS.sql en Supabase.' },
         { status: 500 }
       );
     }
@@ -46,38 +48,46 @@ export async function GET(
     }
 
     const items = (order.order_items || []) as {
-      product_ref: string; product_name: string | null; quantity: number; price_at_time: number;
-      discount_percent: number | null; tax_percent: number | null; estampilla: number | null;
-      impoconsumo: number | null; id_plan_cuenta: string | null;
+      product_ref: string; product_name: string | null; quantity: number; unit_type: string | null;
+      notes: string | null; price_at_time: number; discount_percent: number | null; tax_percent: number | null;
+      barcode: string | null; cost: number | null; real_cost: number | null; returned_quantity: number | null;
     }[];
 
-    type Cell = string | number | { f: string };
+    type Cell = string | number;
     const rows: Cell[][] = [HEADERS];
     items.forEach((item) => {
-      const r = rows.length + 1; // fila de Excel (1-indexed, la fila 1 es el encabezado)
+      const price = item.price_at_time || 0;
+      const qty = item.quantity || 0;
+      const discount = item.discount_percent || 0;
+      const tax = item.tax_percent || 0;
+      const subtotal = price * qty * (1 - discount / 100);
+      const total = subtotal * (1 + tax / 100);
       rows.push([
         item.product_ref || '',
+        item.barcode || '',
         item.product_name || '',
-        item.price_at_time || 0,
-        item.quantity || 0,
-        item.discount_percent || 0,
-        item.tax_percent || 0,
-        { f: `(C${r}*D${r})-((C${r}*D${r})*(E${r}/100))` },
-        item.estampilla || 0,
-        item.impoconsumo || 0,
-        { f: `(G${r})*(F${r}/100+1)+(H${r}*D${r})+(I${r}*D${r})` },
-        item.id_plan_cuenta || '',
+        qty,
+        item.unit_type || 'unidad',
+        price,
+        discount,
+        tax,
+        total,
+        item.notes || '',
+        item.cost || 0,
+        item.real_cost || 0,
+        item.returned_quantity || 0,
       ]);
     });
 
     const worksheet = xlsx.utils.aoa_to_sheet(rows);
     worksheet['!cols'] = [
-      { wch: 22 }, { wch: 28 }, { wch: 14 }, { wch: 10 }, { wch: 11 },
-      { wch: 10 }, { wch: 18 }, { wch: 16 }, { wch: 16 }, { wch: 16 }, { wch: 22 },
+      { wch: 22 }, { wch: 16 }, { wch: 28 }, { wch: 10 }, { wch: 16 },
+      { wch: 14 }, { wch: 11 }, { wch: 10 }, { wch: 14 }, { wch: 16 },
+      { wch: 14 }, { wch: 14 }, { wch: 16 },
     ];
 
     const workbook = xlsx.utils.book_new();
-    xlsx.utils.book_append_sheet(workbook, worksheet, 'Plantilla para importar');
+    xlsx.utils.book_append_sheet(workbook, worksheet, 'Hoja1');
     const buf = xlsx.write(workbook, { type: 'buffer', bookType: 'xlsx' });
 
     return new NextResponse(buf, {

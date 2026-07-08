@@ -22,9 +22,10 @@ interface SecretariaItem {
   notes?: string;
   discount_percent: number;
   tax_percent: number;
-  estampilla: number;
-  impoconsumo: number;
-  id_plan_cuenta: string;
+  barcode: string;
+  cost: number;
+  real_cost: number;
+  returned_quantity: number;
 }
 
 interface OrderDetail {
@@ -34,17 +35,16 @@ interface OrderDetail {
   items: SecretariaItem[];
 }
 
-// Misma fórmula que la plantilla de importación contable y que el backend —
-// se recalcula en vivo mientras la secretaria edita, antes de guardar.
+// Misma fórmula que la plantilla de importación contable (facturaA-971.xlsx) y que
+// el backend — se recalcula en vivo mientras la secretaria edita, antes de guardar.
 const computeSubtotal = (item: SecretariaItem) => {
   const price = item.price || 0;
   const qty = item.quantity || 0;
   return price * qty - (price * qty) * ((item.discount_percent || 0) / 100);
 };
 const computeTotal = (item: SecretariaItem) => {
-  const qty = item.quantity || 0;
   const subtotal = computeSubtotal(item);
-  return subtotal * ((item.tax_percent || 0) / 100 + 1) + (item.estampilla || 0) * qty + (item.impoconsumo || 0) * qty;
+  return subtotal * ((item.tax_percent || 0) / 100 + 1);
 };
 
 export default function SecretariaOrdersBoard() {
@@ -83,11 +83,12 @@ export default function SecretariaOrdersBoard() {
       setSelectedOrder({ id: order.id, customer: order.customer, status: order.status, items: order.items });
       setEditingItems(order.items.map((i: SecretariaItem) => ({
         ref: i.ref, name: i.name, quantity: i.quantity, price: i.price, unit_type: i.unit_type, notes: i.notes,
-        discount_percent: i.discount_percent || 0,
+        discount_percent: 0, // el descuento comercial ya no lo maneja secretaria
         tax_percent: i.tax_percent || 0,
-        estampilla: i.estampilla || 0,
-        impoconsumo: i.impoconsumo || 0,
-        id_plan_cuenta: i.id_plan_cuenta || '',
+        barcode: i.barcode || '',
+        cost: i.cost || 0,
+        real_cost: i.real_cost || 0,
+        returned_quantity: i.returned_quantity || 0,
       })));
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Error cargando el pedido');
@@ -217,67 +218,67 @@ export default function SecretariaOrdersBoard() {
             ) : (
               <div className="p-4 sm:p-6">
                 <div className="overflow-x-auto -mx-4 sm:mx-0">
-                  <table className="w-full text-xs min-w-[900px]">
+                  <table className="w-full text-xs min-w-[1300px]">
                     <thead>
                       <tr className="bg-gray-50 text-gray-500 uppercase text-[10px]">
                         <th className="px-2 py-2 text-left">Referencia</th>
+                        <th className="px-2 py-2 text-left">Cod. Barras</th>
                         <th className="px-2 py-2 text-left">Nombre</th>
-                        <th className="px-2 py-2 text-right">P. Unitario</th>
                         <th className="px-2 py-2 text-right">Cant.</th>
-                        <th className="px-2 py-2 text-right">Desc. %</th>
+                        <th className="px-2 py-2 text-left">Unidad</th>
+                        <th className="px-2 py-2 text-right">P. Unitario</th>
                         <th className="px-2 py-2 text-right">Imp. %</th>
-                        <th className="px-2 py-2 text-right">SubTotal</th>
-                        <th className="px-2 py-2 text-right">Estampilla</th>
-                        <th className="px-2 py-2 text-right">Impoconsumo</th>
                         <th className="px-2 py-2 text-right">Total</th>
-                        <th className="px-2 py-2 text-left">id_plan_cuenta</th>
+                        <th className="px-2 py-2 text-left">Atributo</th>
+                        <th className="px-2 py-2 text-right">Costo</th>
+                        <th className="px-2 py-2 text-right">Costo Real</th>
+                        <th className="px-2 py-2 text-right">Cant. Devuelta</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-100">
                       {editingItems.map((item, i) => (
                         <tr key={i}>
                           <td className="px-2 py-1.5 font-mono">{item.ref}</td>
+                          <td className="px-2 py-1.5">
+                            <input type="text" value={item.barcode}
+                              onChange={e => updateItem(i, { barcode: e.target.value })}
+                              className="w-24 px-1.5 py-1 border rounded" />
+                          </td>
                           <td className="px-2 py-1.5">{item.name}</td>
+                          <td className="px-2 py-1.5">
+                            <input type="number" min="0" value={item.quantity}
+                              onChange={e => updateItem(i, { quantity: Math.max(0, parseInt(e.target.value) || 0) })}
+                              className="w-16 px-1.5 py-1 border rounded text-right" />
+                          </td>
+                          <td className="px-2 py-1.5 text-gray-500">{item.unit_type || 'unidad'}</td>
                           <td className="px-2 py-1.5">
                             <input type="number" min="0" value={item.price ?? 0}
                               onChange={e => updateItem(i, { price: parseFloat(e.target.value) || 0 })}
                               className="w-24 px-1.5 py-1 border rounded text-right" />
                           </td>
                           <td className="px-2 py-1.5">
-                            <input type="number" min="0" value={item.quantity}
-                              onChange={e => updateItem(i, { quantity: Math.max(0, parseInt(e.target.value) || 0) })}
-                              className="w-16 px-1.5 py-1 border rounded text-right" />
-                          </td>
-                          <td className="px-2 py-1.5">
-                            <input type="number" min="0" max="100" value={item.discount_percent}
-                              onChange={e => updateItem(i, { discount_percent: Math.min(100, Math.max(0, parseFloat(e.target.value) || 0)) })}
-                              className="w-16 px-1.5 py-1 border rounded text-right" />
-                          </td>
-                          <td className="px-2 py-1.5">
                             <input type="number" min="0" value={item.tax_percent}
                               onChange={e => updateItem(i, { tax_percent: Math.max(0, parseFloat(e.target.value) || 0) })}
                               className="w-16 px-1.5 py-1 border rounded text-right" />
                           </td>
-                          <td className="px-2 py-1.5 text-right font-semibold text-gray-700 bg-gray-50">
-                            ${computeSubtotal(item).toLocaleString('es-CO')}
-                          </td>
-                          <td className="px-2 py-1.5">
-                            <input type="number" min="0" value={item.estampilla}
-                              onChange={e => updateItem(i, { estampilla: Math.max(0, parseFloat(e.target.value) || 0) })}
-                              className="w-20 px-1.5 py-1 border rounded text-right" />
-                          </td>
-                          <td className="px-2 py-1.5">
-                            <input type="number" min="0" value={item.impoconsumo}
-                              onChange={e => updateItem(i, { impoconsumo: Math.max(0, parseFloat(e.target.value) || 0) })}
-                              className="w-20 px-1.5 py-1 border rounded text-right" />
-                          </td>
                           <td className="px-2 py-1.5 text-right font-bold text-[#7c3aed] bg-purple-50">
                             ${computeTotal(item).toLocaleString('es-CO')}
                           </td>
+                          <td className="px-2 py-1.5 text-gray-500">{item.notes || '—'}</td>
                           <td className="px-2 py-1.5">
-                            <input type="text" value={item.id_plan_cuenta}
-                              onChange={e => updateItem(i, { id_plan_cuenta: e.target.value })}
-                              className="w-20 px-1.5 py-1 border rounded" />
+                            <input type="number" min="0" value={item.cost}
+                              onChange={e => updateItem(i, { cost: Math.max(0, parseFloat(e.target.value) || 0) })}
+                              className="w-24 px-1.5 py-1 border rounded text-right" />
+                          </td>
+                          <td className="px-2 py-1.5">
+                            <input type="number" min="0" value={item.real_cost}
+                              onChange={e => updateItem(i, { real_cost: Math.max(0, parseFloat(e.target.value) || 0) })}
+                              className="w-24 px-1.5 py-1 border rounded text-right" />
+                          </td>
+                          <td className="px-2 py-1.5">
+                            <input type="number" min="0" value={item.returned_quantity}
+                              onChange={e => updateItem(i, { returned_quantity: Math.max(0, parseFloat(e.target.value) || 0) })}
+                              className="w-20 px-1.5 py-1 border rounded text-right" />
                           </td>
                         </tr>
                       ))}

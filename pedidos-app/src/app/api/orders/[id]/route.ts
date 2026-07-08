@@ -17,24 +17,23 @@ interface OrderItemUpdate {
   notes?: string;
   discount_percent?: number;
   tax_percent?: number;
-  estampilla?: number;
-  impoconsumo?: number;
-  id_plan_cuenta?: string;
+  barcode?: string;
+  cost?: number;
+  real_cost?: number;
+  returned_quantity?: number;
 }
 
-// Formula contable compartida con la plantilla de secretaría:
-// Subtotal = (precio*cant) - descuento%; Total = Subtotal*(1+impuesto%) + estampilla*cant + impoconsumo*cant.
-// Con descuento/impuesto/estampilla/impoconsumo en 0 (valor por defecto), el resultado es precio*cantidad —
+// Formula contable compartida con la plantilla de secretaría (facturaA-971.xlsx):
+// Total = (precio*cant)*(1-descuento%)*(1+impuesto%).
+// Con descuento/impuesto en 0 (valor por defecto), el resultado es precio*cantidad —
 // así que esta fórmula es compatible hacia atrás con pedidos que nunca pasaron por secretaría.
 const computeItemTotal = (item: OrderItemUpdate) => {
   const price = item.price || 0;
   const qty = item.quantity || 0;
   const discount = item.discount_percent || 0;
   const tax = item.tax_percent || 0;
-  const estampilla = item.estampilla || 0;
-  const impoconsumo = item.impoconsumo || 0;
   const subtotal = price * qty - (price * qty) * (discount / 100);
-  return subtotal * (tax / 100 + 1) + estampilla * qty + impoconsumo * qty;
+  return subtotal * (tax / 100 + 1);
 };
 
 interface OrderRow {
@@ -45,7 +44,7 @@ interface OrderRow {
   order_items: {
     id: string; product_ref: string; product_name: string | null; quantity: number; unit_type: string | null;
     notes: string | null; price_at_time: number; discount_percent?: number | null; tax_percent?: number | null;
-    estampilla?: number | null; impoconsumo?: number | null; id_plan_cuenta?: string | null;
+    barcode?: string | null; cost?: number | null; real_cost?: number | null; returned_quantity?: number | null;
   }[];
 }
 
@@ -58,7 +57,7 @@ export async function GET(
     const withAccounting = `
         id, customer_id, status, total, vendor_name, delivery_address, notes, created_at,
         customers (id, name, email, phone, local_name, city, neighborhood, address),
-        order_items (id, product_ref, product_name, quantity, unit_type, notes, price_at_time, discount_percent, tax_percent, estampilla, impoconsumo, id_plan_cuenta)
+        order_items (id, product_ref, product_name, quantity, unit_type, notes, price_at_time, discount_percent, tax_percent, barcode, cost, real_cost, returned_quantity)
       `;
     const withoutAccounting = `
         id, customer_id, status, total, vendor_name, delivery_address, notes, created_at,
@@ -114,9 +113,10 @@ export async function GET(
           price: oi.price_at_time,
           discount_percent: oi.discount_percent || 0,
           tax_percent: oi.tax_percent || 0,
-          estampilla: oi.estampilla || 0,
-          impoconsumo: oi.impoconsumo || 0,
-          id_plan_cuenta: oi.id_plan_cuenta || '',
+          barcode: oi.barcode || '',
+          cost: oi.cost || 0,
+          real_cost: oi.real_cost || 0,
+          returned_quantity: oi.returned_quantity || 0,
         })),
       }
     });
@@ -197,9 +197,10 @@ export async function PUT(
         notes: item.notes || null,
         discount_percent: item.discount_percent || 0,
         tax_percent: item.tax_percent || 0,
-        estampilla: item.estampilla || 0,
-        impoconsumo: item.impoconsumo || 0,
-        id_plan_cuenta: item.id_plan_cuenta || null,
+        barcode: item.barcode || null,
+        cost: item.cost || 0,
+        real_cost: item.real_cost || 0,
+        returned_quantity: item.returned_quantity || 0,
       };
       if (existing) {
         const { error: updErr } = await getSupabase()
@@ -221,7 +222,7 @@ export async function PUT(
     const code = (error as { code?: string })?.code;
     if (code === '42703' || code === 'PGRST204') {
       return NextResponse.json(
-        { success: false, message: 'Falta correr la migración ADD_SECRETARIA_ACCOUNTING_FIELDS.sql en Supabase antes de editar estos campos.' },
+        { success: false, message: 'Falta correr la migración ADD_SECRETARIA_FACTURA_FIELDS.sql en Supabase antes de editar estos campos.' },
         { status: 500 }
       );
     }
