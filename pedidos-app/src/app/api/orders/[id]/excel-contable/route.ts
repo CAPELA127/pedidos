@@ -23,6 +23,21 @@ const HEADERS = [
   'cantidad_develta',
 ];
 
+interface OrderItemRow {
+  product_ref: string; product_name: string | null; quantity: number; unit_type: string | null;
+  notes: string | null; price_at_time: number; discount_percent: number | null; tax_percent: number | null;
+  barcode: string | null; cost: number | null; real_cost: number | null; returned_quantity: number | null;
+}
+
+interface RemissionItemRow {
+  product_ref: string; product_name: string | null; ordered_quantity: number; packed_quantity: number;
+  price_at_time: number; unit_type: string | null; item_status: string;
+}
+
+// Une pedido original + remisión: la referencia+nombre identifica el mismo renglón
+// en ambas tablas (una misma referencia puede tener presentaciones distintas).
+const itemKey = (ref: string, name: string | null) => `${ref}::${name || ''}`;
+
 export async function GET(
   _request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -47,37 +62,81 @@ export async function GET(
       return NextResponse.json({ error: 'Pedido no encontrado' }, { status: 404 });
     }
 
-    const items = (order.order_items || []) as {
-      product_ref: string; product_name: string | null; quantity: number; unit_type: string | null;
-      notes: string | null; price_at_time: number; discount_percent: number | null; tax_percent: number | null;
-      barcode: string | null; cost: number | null; real_cost: number | null; returned_quantity: number | null;
-    }[];
+    const orderItems = (order.order_items || []) as OrderItemRow[];
+    const orderItemByKey = new Map(orderItems.map((oi) => [itemKey(oi.product_ref, oi.product_name), oi]));
+
+    // Si bodega ya empacó el pedido, la remisión refleja lo que realmente se
+    // despachó (cantidad empacada, faltantes, agregados) — eso es lo que la
+    // secretaría corrige en el tablero de Remisiones, así que el Excel debe
+    // salir de ahí y no de las cantidades originales del pedido.
+    // Se toma la PRIMERA remisión creada (no la más reciente): un mismo
+    // pedido no debería generar más de una remisión, pero cuando ocurre por
+    // un duplicado, la original (más antigua) es la que trae las ediciones
+    // reales de bodega/secretaría — las posteriores son duplicados vacíos.
+    const { data: remission } = await supabase
+      .from('remissions')
+      .select('id, remission_items (product_ref, product_name, ordered_quantity, packed_quantity, price_at_time, unit_type, item_status)')
+      .eq('order_id', orderId)
+      .order('created_at', { ascending: true })
+      .limit(1)
+      .maybeSingle();
+
+    const remissionItems = (remission?.remission_items || []) as RemissionItemRow[];
 
     type Cell = string | number;
     const rows: Cell[][] = [HEADERS];
-    items.forEach((item) => {
-      const price = item.price_at_time || 0;
-      const qty = item.quantity || 0;
-      const discount = item.discount_percent || 0;
-      const tax = item.tax_percent || 0;
-      const subtotal = price * qty * (1 - discount / 100);
+
+    const buildRow = (opts: {
+      ref: string; name: string | null; qty: number; unitType: string | null;
+      price: number; returnedQty: number; orig?: OrderItemRow;
+    }) => {
+      const discount = opts.orig?.discount_percent || 0;
+      const tax = opts.orig?.tax_percent || 0;
+      const subtotal = opts.price * opts.qty * (1 - discount / 100);
       const total = subtotal * (1 + tax / 100);
-      rows.push([
-        item.product_ref || '',
-        item.barcode || '',
-        item.product_name || '',
-        qty,
-        item.unit_type || 'unidad',
-        price,
+      return [
+        opts.ref || '',
+        opts.orig?.barcode || '',
+        opts.name || '',
+        opts.qty,
+        opts.unitType || 'unidad',
+        opts.price,
         discount,
         tax,
         total,
-        item.notes || '',
-        item.cost || 0,
-        item.real_cost || 0,
-        item.returned_quantity || 0,
-      ]);
-    });
+        opts.orig?.notes || '',
+        opts.orig?.cost || 0,
+        opts.orig?.real_cost || 0,
+        opts.returnedQty,
+      ];
+    };
+
+    if (remissionItems.length > 0) {
+      remissionItems.forEach((ri) => {
+        const orig = orderItemByKey.get(itemKey(ri.product_ref, ri.product_name));
+        rows.push(buildRow({
+          ref: ri.product_ref,
+          name: ri.product_name || orig?.product_name || null,
+          qty: ri.packed_quantity || 0,
+          unitType: ri.unit_type || orig?.unit_type || null,
+          price: orig?.price_at_time ?? ri.price_at_time ?? 0,
+          returnedQty: Math.max(0, (ri.ordered_quantity || 0) - (ri.packed_quantity || 0)),
+          orig,
+        }));
+      });
+    } else {
+      orderItems.forEach((item) => {
+        rows.push(buildRow({
+          ref: item.product_ref,
+          name: item.product_name,
+          qty: item.quantity || 0,
+          unitType: item.unit_type,
+          price: item.price_at_time || 0,
+          returnedQty: item.returned_quantity || 0,
+          orig: item,
+        }));
+      });
+    }
 
     const worksheet = xlsx.utils.aoa_to_sheet(rows);
     worksheet['!cols'] = [
