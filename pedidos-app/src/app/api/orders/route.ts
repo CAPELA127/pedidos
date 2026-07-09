@@ -1,4 +1,5 @@
 import { getSupabase } from '@/lib/supabase-server';
+import { nextSequentialOrderId } from '@/lib/order-id';
 import { NextResponse } from 'next/server';
 
 export const dynamic = 'force-dynamic';
@@ -109,7 +110,8 @@ export async function POST(req: Request) {
 
     // Idempotencia para sincronización offline: si el cliente manda un id y
     // ese pedido ya existe, es un reintento — responder éxito sin duplicar
-    const clientOrderId = payload.id && /^ORD-[A-Z0-9-]+$/i.test(payload.id) ? payload.id : null;
+    const payloadTotal = items.reduce((sum, item) => sum + (item.price || 0) * item.quantity, 0);
+    let clientOrderId = payload.id && /^ORD-[A-Z0-9-]+$/i.test(payload.id) ? payload.id : null;
     if (clientOrderId) {
       const { data: existingOrder } = await getSupabase()
         .from('orders')
@@ -117,7 +119,15 @@ export async function POST(req: Request) {
         .eq('id', clientOrderId)
         .single();
 
-      if (existingOrder) {
+      // Con numeración consecutiva dos vendedores pueden llegar con el mismo
+      // número: solo es un reintento si el pedido existente calza (mismo total
+      // y mismo cliente); si no, es una colisión y se crea con otro número.
+      const isRetry = existingOrder
+        && Math.abs((existingOrder.total || 0) - payloadTotal) < 0.01
+        && (!providedCustomerId || existingOrder.customer_id === providedCustomerId);
+      if (existingOrder && !isRetry) clientOrderId = null;
+
+      if (existingOrder && isRetry) {
         // Reintento tras fallo parcial: si la orden quedó sin items, completarlos
         const { count } = await getSupabase()
           .from('order_items')
@@ -197,26 +207,36 @@ export async function POST(req: Request) {
       }
     }
 
-    const orderId = clientOrderId || `ORD-${Math.floor(1000 + Math.random() * 9000)}`;
-    const total = items.reduce((sum, item) => sum + (item.price || 0) * item.quantity, 0);
+    let orderId = clientOrderId || await nextSequentialOrderId(getSupabase());
+    const total = payloadTotal;
 
     // Crear orden
     // vendor_name se incluye sólo si la columna existe en la tabla
-    const orderRow: Record<string, unknown> = {
+    const buildRow = (): Record<string, unknown> => ({
       id: orderId,
       customer_id: customerId,
       status: 'Pendiente',
       total,
       delivery_address: delivery_address || null,
       notes: notes || null,
-    };
+    });
 
-    // Intentar con vendor_name primero; si falla por columna inexistente, reintenta sin ella
-    let { error: orderErr } = await getSupabase().from('orders').insert([{ ...orderRow, vendor_name: vendor_name || null }]);
-    if (orderErr?.message?.includes('vendor_name') || orderErr?.code === '42703') {
-      console.warn('Columna vendor_name no existe, reintentando sin ella. Corre: ALTER TABLE orders ADD COLUMN IF NOT EXISTS vendor_name TEXT');
-      const retry = await getSupabase().from('orders').insert([orderRow]);
-      orderErr = retry.error;
+    let orderErr = null;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const orderRow = buildRow();
+      // Intentar con vendor_name primero; si falla por columna inexistente, reintenta sin ella
+      ({ error: orderErr } = await getSupabase().from('orders').insert([{ ...orderRow, vendor_name: vendor_name || null }]));
+      if (orderErr?.message?.includes('vendor_name') || orderErr?.code === '42703') {
+        console.warn('Columna vendor_name no existe, reintentando sin ella. Corre: ALTER TABLE orders ADD COLUMN IF NOT EXISTS vendor_name TEXT');
+        const retry = await getSupabase().from('orders').insert([orderRow]);
+        orderErr = retry.error;
+      }
+      // Número consecutivo tomado por otro pedido en paralelo: probar el siguiente
+      if (orderErr?.code === '23505') {
+        orderId = await nextSequentialOrderId(getSupabase());
+        continue;
+      }
+      break;
     }
     if (orderErr) throw orderErr;
 

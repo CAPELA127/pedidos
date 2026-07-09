@@ -1401,8 +1401,16 @@ export default function ChatInterface() {
     setIsSending(true);
     setShowConfirmModal(false);
 
-    // Id basado en timestamp: único aun cuando el pedido se crea offline
-    const orderId = `ORD-${Date.now().toString().slice(-8)}`;
+    // Número consecutivo del servidor (ORD-001, ORD-002, …); si no hay red,
+    // id por timestamp como respaldo — único aun cuando el pedido se crea offline
+    let orderId = `ORD-${Date.now().toString().slice(-8)}`;
+    if (navigator.onLine) {
+      try {
+        const nextRes = await fetch('/api/orders/next-id');
+        const nextData = await nextRes.json();
+        if (nextRes.ok && nextData.success && nextData.id) orderId = nextData.id;
+      } catch { /* sin red: se queda el respaldo por timestamp */ }
+    }
     const payload = {
       id: orderId,
       customer: customerData.name,

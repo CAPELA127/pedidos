@@ -67,32 +67,45 @@ export async function GET(request: NextRequest) {
 
     if (/^REM-?\d+$/.test(upper)) {
       remissionId = upper.startsWith('REM-') ? upper : `REM-${upper}`;
-    } else if (/^ORD-?\d+$/.test(upper) || /^\d+$/.test(upper)) {
-      orderId = upper.startsWith('ORD-') ? upper : `ORD-${upper}`;
+    } else if (/^ORD-?\d+$/.test(upper)) {
+      orderId = upper;
     }
 
     let orderIdsFilter: string[] | null = null;
     if (!remissionId && !orderId) {
-      // Búsqueda por nombre de cliente: primero los clientes, luego sus pedidos
+      // Puede ser # de pedido (solo dígitos), cédula/NIT (admite guiones),
+      // teléfono o nombre/alias del cliente. Clientes → pedidos → remisiones.
+      const candidateOrderIds = new Set<string>();
+      if (/^\d+$/.test(qRaw)) {
+        candidateOrderIds.add(`ORD-${qRaw}`);
+        // Variantes del consecutivo: "5" → ORD-005, "1000" → ORD-01000
+        const n = parseInt(qRaw, 10);
+        candidateOrderIds.add(n <= 999 ? `ORD-${String(n).padStart(3, '0')}` : `ORD-0${n}`);
+      }
+
+      // sin comas/paréntesis para no romper la sintaxis del filtro or() de PostgREST
+      const safe = qRaw.replace(/[,()]/g, ' ').trim();
+      const customerFilter = ['name', 'alias', 'cc_nit', 'phone', 'telefono_2']
+        .map(f => `${f}.ilike.%${safe}%`)
+        .join(',');
       const { data: custMatches, error: custErr } = await supabase
         .from('customers')
         .select('id')
-        .ilike('name', `%${qRaw}%`)
+        .or(customerFilter)
         .limit(20);
       if (custErr) throw custErr;
 
       const customerIds = (custMatches || []).map(c => c.id);
-      if (customerIds.length === 0) {
-        return NextResponse.json({ success: true, matches: [] });
+      if (customerIds.length > 0) {
+        const { data: orderMatches, error: orderErr } = await supabase
+          .from('orders')
+          .select('id')
+          .in('customer_id', customerIds);
+        if (orderErr) throw orderErr;
+        for (const o of orderMatches || []) candidateOrderIds.add(o.id);
       }
 
-      const { data: orderMatches, error: orderErr } = await supabase
-        .from('orders')
-        .select('id')
-        .in('customer_id', customerIds);
-      if (orderErr) throw orderErr;
-
-      orderIdsFilter = (orderMatches || []).map(o => o.id);
+      orderIdsFilter = [...candidateOrderIds];
       if (orderIdsFilter.length === 0) {
         return NextResponse.json({ success: true, matches: [] });
       }
