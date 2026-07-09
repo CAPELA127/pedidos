@@ -3,9 +3,9 @@ import { getSupabase } from '@/lib/supabase-server';
 
 export const dynamic = 'force-dynamic';
 
-// POST: secretaría guarda la remisión como lista para facturar.
-// A partir de aquí el vendedor puede encontrarla en el chat para aplicar
-// descuento/flete/devoluciones — secretaría ya no puede editarla.
+// POST: secretaría marca la remisión como revisada (bitácora informativa).
+// No bloquea nada: el vendedor puede liquidarla en el chat con o sin esta
+// marca, y secretaría puede seguir editándola después igual.
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }

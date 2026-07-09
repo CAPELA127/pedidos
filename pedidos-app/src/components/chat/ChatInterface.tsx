@@ -75,10 +75,15 @@ type ConversationState =
   | 'completed'
   | 'rem_awaiting_order_id'
   | 'rem_choosing_match'
+  | 'rem_awaiting_edit_choice'
   | 'rem_awaiting_discount'
   | 'rem_awaiting_freight'
-  | 'rem_awaiting_returns_value'
-  | 'rem_awaiting_returns_reason'
+  | 'rem_awaiting_returns_yn'
+  | 'rem_awaiting_return_ref'
+  | 'rem_awaiting_return_qty'
+  | 'rem_awaiting_return_price'
+  | 'rem_awaiting_return_reason'
+  | 'rem_awaiting_return_more'
   | 'rem_confirming'
   | 'rem_done';
 
@@ -109,6 +114,14 @@ interface RemissionMatch {
   total: number;
   createdAt?: string;
   items: RemissionOrderItem[];
+}
+
+interface RemissionReturnItem {
+  ref: string;
+  name: string;
+  quantity: number;
+  price: number;
+  reason: string;
 }
 
 interface CustomerData {
@@ -175,9 +188,12 @@ export default function ChatInterface() {
   const [remMatches, setRemMatches] = useState<RemissionMatch[]>([]);
   const [remDiscount, setRemDiscount] = useState(0);
   const [remFreight, setRemFreight] = useState(0);
-  const [remReturnsValue, setRemReturnsValue] = useState(0);
-  const [remReturnsReason, setRemReturnsReason] = useState('');
+  const [remReturns, setRemReturns] = useState<RemissionReturnItem[]>([]);
+  const [remReturnDraft, setRemReturnDraft] = useState<{ ref: string; name: string; quantity: number; price: number } | null>(null);
   const [remResult, setRemResult] = useState<{ remissionId: string; liquidatedTotal: number } | null>(null);
+  const [showRemEditModal, setShowRemEditModal] = useState(false);
+  const [remEditItems, setRemEditItems] = useState<RemissionOrderItem[]>([]);
+  const [isSavingRemEdit, setIsSavingRemEdit] = useState(false);
   const [vendorName, setVendorName] = useState('');
   const [customerData, setCustomerData] = useState<CustomerData>({ name: '', email: '' });
   const [selectedImage, setSelectedImage] = useState<{ url: string } | null>(null);
@@ -297,6 +313,14 @@ export default function ChatInterface() {
           content: `☁️ ${result.synced.length === 1 ? 'Pedido sincronizado' : `${result.synced.length} pedidos sincronizados`} con la nube: ${result.synced.map(s => s.orderId).join(', ')}`,
           timestamp: new Date()
         }]);
+        // Si el pedido que se está mostrando en la pantalla de confirmación
+        // era uno de los que estaban en cola, ya existe en el servidor —
+        // habilitar el link de WhatsApp/PDF que antes daría "no encontrado"
+        setConfirmedOrder(prev =>
+          prev && prev.pendingSync && result.synced.some(s => s.orderId === prev.id)
+            ? { ...prev, pendingSync: false }
+            : prev
+        );
       }
       if (result.failed.length > 0) {
         setMessages(prev => [...prev, {
@@ -735,6 +759,21 @@ export default function ChatInterface() {
       return;
     }
 
+    // ── ¿EDITAR EL PEDIDO ANTES DE CONTINUAR? ──
+    if (conversationState === 'rem_awaiting_edit_choice') {
+      const resp = inputText.trim();
+      setMessages(prev => [...prev, { id: nextMessageId(), type: 'user', content: resp, timestamp: new Date() }]);
+      setInputText('');
+      if (/^(si|sí|s|ok|yes|y|claro|listo|dale|confirmo|correcto)$/i.test(resp)) {
+        setRemEditItems((remOrder?.items || []).map(i => ({ ...i })));
+        setShowRemEditModal(true);
+        return;
+      }
+      setMessages(prev => [...prev, { id: nextMessageId(), type: 'bot', content: '¿Cuál es el descuento? (% — escribe 0 si no aplica)', timestamp: new Date() }]);
+      setConversationState('rem_awaiting_discount');
+      return;
+    }
+
     // ── DESCUENTO (%) ──
     if (conversationState === 'rem_awaiting_discount') {
       const value = parseFloat(inputText.trim().replace(',', '.'));
@@ -760,42 +799,106 @@ export default function ChatInterface() {
         return;
       }
       setRemFreight(value);
-      setMessages(prev => [...prev, { id: nextMessageId(), type: 'bot', content: '¿Hay devoluciones o daños? Escribe el valor en COP (0 si no aplica)', timestamp: new Date() }]);
-      setConversationState('rem_awaiting_returns_value');
+      setRemReturns([]);
+      setMessages(prev => [...prev, { id: nextMessageId(), type: 'bot', content: '¿Hay devoluciones o garantías? (sí/no)', timestamp: new Date() }]);
+      setConversationState('rem_awaiting_returns_yn');
       return;
     }
 
-    // ── DEVOLUCIONES/DAÑOS ($) ──
-    if (conversationState === 'rem_awaiting_returns_value') {
-      const value = parseFloat(inputText.trim().replace(/\./g, '').replace(',', '.'));
-      setMessages(prev => [...prev, { id: nextMessageId(), type: 'user', content: inputText.trim(), timestamp: new Date() }]);
+    // ── ¿HAY DEVOLUCIONES/GARANTÍAS? ──
+    if (conversationState === 'rem_awaiting_returns_yn') {
+      const resp = inputText.trim();
+      setMessages(prev => [...prev, { id: nextMessageId(), type: 'user', content: resp, timestamp: new Date() }]);
       setInputText('');
-      if (isNaN(value) || value < 0) {
-        setMessages(prev => [...prev, { id: nextMessageId(), type: 'bot', content: '❌ Escribe un valor válido (0 si no hay devoluciones/daños).', timestamp: new Date() }]);
+      if (/^(si|sí|s|ok|yes|y|claro|listo|dale|confirmo|correcto)$/i.test(resp)) {
+        const refsList = (remOrder?.items || []).map(i => `• ${i.ref} — ${i.name}`).join('\n');
+        setMessages(prev => [...prev, { id: nextMessageId(), type: 'bot', content: `¿Qué referencia tiene la garantía o devolución? Elige una de las facturadas en esta remisión:\n${refsList}`, timestamp: new Date() }]);
+        setConversationState('rem_awaiting_return_ref');
         return;
       }
-      setRemReturnsValue(value);
-      if (value > 0) {
-        setMessages(prev => [...prev, { id: nextMessageId(), type: 'bot', content: '¿Cuál es el motivo de la devolución o daño?', timestamp: new Date() }]);
-        setConversationState('rem_awaiting_returns_reason');
-        return;
-      }
-      setRemReturnsReason('');
-      askRemConfirmation(remOrder, remDiscount, remFreight, value, '');
+      askRemConfirmation(remOrder, remDiscount, remFreight, remReturns);
       return;
     }
 
-    // ── MOTIVO DE DEVOLUCIÓN ──
-    if (conversationState === 'rem_awaiting_returns_reason') {
+    // ── REFERENCIA DE LA DEVOLUCIÓN (debe estar facturada en esta remisión) ──
+    if (conversationState === 'rem_awaiting_return_ref') {
+      const raw = inputText.trim();
+      setMessages(prev => [...prev, { id: nextMessageId(), type: 'user', content: raw, timestamp: new Date() }]);
+      setInputText('');
+      const match = (remOrder?.items || []).find(i => i.ref.toUpperCase() === raw.toUpperCase());
+      if (!match) {
+        const refsList = (remOrder?.items || []).map(i => `• ${i.ref} — ${i.name}`).join('\n');
+        setMessages(prev => [...prev, { id: nextMessageId(), type: 'bot', content: `❌ Esa referencia no está facturada en esta remisión. Elige una:\n${refsList}`, timestamp: new Date() }]);
+        return;
+      }
+      setRemReturnDraft({ ref: match.ref, name: match.name, quantity: 0, price: match.price || 0 });
+      setMessages(prev => [...prev, { id: nextMessageId(), type: 'bot', content: `✅ ${match.name} (${match.ref}). ¿Cantidad?`, timestamp: new Date() }]);
+      setConversationState('rem_awaiting_return_qty');
+      return;
+    }
+
+    // ── CANTIDAD DE LA DEVOLUCIÓN ──
+    if (conversationState === 'rem_awaiting_return_qty') {
+      const raw = inputText.trim();
+      setMessages(prev => [...prev, { id: nextMessageId(), type: 'user', content: raw, timestamp: new Date() }]);
+      setInputText('');
+      const qty = parseInt(raw.match(/\d+/)?.[0] || '', 10);
+      if (!qty || qty <= 0) {
+        setMessages(prev => [...prev, { id: nextMessageId(), type: 'bot', content: '❌ Escribe una cantidad válida (mayor a 0).', timestamp: new Date() }]);
+        return;
+      }
+      setRemReturnDraft(prev => prev ? { ...prev, quantity: qty } : prev);
+      setMessages(prev => [...prev, { id: nextMessageId(), type: 'bot', content: `¿Precio unitario de la devolución/garantía? (COP — el precio facturado era COP $${(remReturnDraft?.price || 0).toLocaleString('es-CO')}, escribe otro valor o repite el mismo)`, timestamp: new Date() }]);
+      setConversationState('rem_awaiting_return_price');
+      return;
+    }
+
+    // ── PRECIO UNITARIO DE LA DEVOLUCIÓN ──
+    if (conversationState === 'rem_awaiting_return_price') {
+      const raw = inputText.trim();
+      setMessages(prev => [...prev, { id: nextMessageId(), type: 'user', content: raw, timestamp: new Date() }]);
+      setInputText('');
+      const price = parseFloat(raw.replace(/\./g, '').replace(',', '.'));
+      if (isNaN(price) || price < 0) {
+        setMessages(prev => [...prev, { id: nextMessageId(), type: 'bot', content: '❌ Escribe un precio válido.', timestamp: new Date() }]);
+        return;
+      }
+      setRemReturnDraft(prev => prev ? { ...prev, price } : prev);
+      setMessages(prev => [...prev, { id: nextMessageId(), type: 'bot', content: '¿Cuál es el motivo? (ej: quebrado, garantía, no llegó completo)', timestamp: new Date() }]);
+      setConversationState('rem_awaiting_return_reason');
+      return;
+    }
+
+    // ── MOTIVO DE LA DEVOLUCIÓN ──
+    if (conversationState === 'rem_awaiting_return_reason') {
       const reason = inputText.trim();
       setMessages(prev => [...prev, { id: nextMessageId(), type: 'user', content: reason, timestamp: new Date() }]);
       setInputText('');
       if (!reason) {
-        setMessages(prev => [...prev, { id: nextMessageId(), type: 'bot', content: '❌ Escribe el motivo de la devolución o daño.', timestamp: new Date() }]);
+        setMessages(prev => [...prev, { id: nextMessageId(), type: 'bot', content: '❌ Escribe el motivo de la devolución o garantía.', timestamp: new Date() }]);
         return;
       }
-      setRemReturnsReason(reason);
-      askRemConfirmation(remOrder, remDiscount, remFreight, remReturnsValue, reason);
+      if (remReturnDraft) {
+        setRemReturns(prev => [...prev, { ...remReturnDraft, reason }]);
+      }
+      setRemReturnDraft(null);
+      setMessages(prev => [...prev, { id: nextMessageId(), type: 'bot', content: '✅ Agregado. ¿Quieres agregar otra referencia? (sí/no)', timestamp: new Date() }]);
+      setConversationState('rem_awaiting_return_more');
+      return;
+    }
+
+    // ── ¿AGREGAR OTRA REFERENCIA A LA DEVOLUCIÓN? ──
+    if (conversationState === 'rem_awaiting_return_more') {
+      const resp = inputText.trim();
+      setMessages(prev => [...prev, { id: nextMessageId(), type: 'user', content: resp, timestamp: new Date() }]);
+      setInputText('');
+      if (/^(si|sí|s|ok|yes|y|claro|listo|dale|confirmo|correcto)$/i.test(resp)) {
+        const refsList = (remOrder?.items || []).map(i => `• ${i.ref} — ${i.name}`).join('\n');
+        setMessages(prev => [...prev, { id: nextMessageId(), type: 'bot', content: `¿Qué referencia tiene la garantía o devolución?\n${refsList}`, timestamp: new Date() }]);
+        setConversationState('rem_awaiting_return_ref');
+        return;
+      }
+      askRemConfirmation(remOrder, remDiscount, remFreight, remReturns);
       return;
     }
 
@@ -1213,14 +1316,17 @@ export default function ChatInterface() {
       total: match.total,
     });
     setRemRemissionId(match.remissionId);
+    setRemDiscount(0);
+    setRemFreight(0);
+    setRemReturns([]);
     const itemsList = match.items.map(i => `• ${i.name} ×${i.quantity}`).join('\n');
     setMessages(prev => [...prev, {
       id: nextMessageId(),
       type: 'bot',
-      content: `✅ ${match.remissionId} — ${match.customerName}\n${itemsList}\nSubtotal: COP $${match.total.toLocaleString('es-CO')}\n\n¿Cuál es el descuento? (% — escribe 0 si no aplica)`,
+      content: `✅ ${match.remissionId} — ${match.customerName}\n${itemsList}\nSubtotal: COP $${match.total.toLocaleString('es-CO')}\n\n¿Quieres editar el pedido antes de continuar (cambiar cantidades/precios o quitar algo que no haya)? (sí/no)`,
       timestamp: new Date()
     }]);
-    setConversationState('rem_awaiting_discount');
+    setConversationState('rem_awaiting_edit_choice');
   };
 
   const handleSelectRemissionMatch = (match: RemissionMatch) => {
@@ -1389,24 +1495,78 @@ export default function ChatInterface() {
     order: RemissionOrder | null,
     discount: number,
     freight: number,
-    returnsValue: number,
-    returnsReason: string
+    returns: RemissionReturnItem[]
   ) => {
     if (!order) return;
+    const returnsValue = returns.reduce((s, r) => s + r.quantity * r.price, 0);
     const discountAmount = Math.round(order.total * discount / 100);
     const liquidatedTotal = order.total - discountAmount - freight - returnsValue;
+    const returnsLines = returns.map(r => `  • ${r.name} (${r.ref}) ×${r.quantity} @ COP $${r.price.toLocaleString('es-CO')} — ${r.reason}`);
     const lines = [
       `📋 Resumen de la remisión ${order.id}:`,
       `Subtotal: COP $${order.total.toLocaleString('es-CO')}`,
       discount > 0 ? `Descuento (${discount}%): -COP $${discountAmount.toLocaleString('es-CO')}` : null,
       freight > 0 ? `Flete: -COP $${freight.toLocaleString('es-CO')}` : null,
-      returnsValue > 0 ? `Devoluciones/daños (${returnsReason}): -COP $${returnsValue.toLocaleString('es-CO')}` : null,
+      returns.length > 0 ? `Devoluciones/garantías: -COP $${returnsValue.toLocaleString('es-CO')}` : null,
+      ...returnsLines,
       `Total a cobrar: COP $${liquidatedTotal.toLocaleString('es-CO')}`,
       '',
       `¿Confirmas estos datos, ${vendorName}? (sí / no)`
-    ].filter(Boolean);
+    ].filter((l): l is string => l !== null);
     setMessages(prev => [...prev, { id: nextMessageId(), type: 'bot', content: lines.join('\n'), timestamp: new Date() }]);
     setConversationState('rem_confirming');
+  };
+
+  const updateRemEditItem = (index: number, patch: Partial<RemissionOrderItem>) => {
+    setRemEditItems(prev => prev.map((item, i) => i === index ? { ...item, ...patch } : item));
+  };
+
+  const removeRemEditItem = (index: number) => {
+    setRemEditItems(prev => prev.filter((_, i) => i !== index));
+  };
+
+  const cancelRemEdit = () => {
+    setShowRemEditModal(false);
+    setMessages(prev => [...prev, { id: nextMessageId(), type: 'bot', content: '¿Cuál es el descuento? (% — escribe 0 si no aplica)', timestamp: new Date() }]);
+    setConversationState('rem_awaiting_discount');
+  };
+
+  const saveRemEdit = async () => {
+    if (!remRemissionId) return;
+    setIsSavingRemEdit(true);
+    try {
+      const res = await fetch(`/api/remissions/${remRemissionId}/items`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          items: remEditItems.map(i => ({
+            ref: i.ref, name: i.name, quantity: i.quantity, price: i.price || 0, unit_type: i.unit_type || 'unidad',
+          })),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) throw new Error(data.message || 'Error guardando los cambios');
+
+      const newTotal = data.remission?.total ?? remEditItems.reduce((s, i) => s + (i.price || 0) * i.quantity, 0);
+      setRemOrder(prev => prev ? { ...prev, items: [...remEditItems], total: newTotal } : prev);
+      setShowRemEditModal(false);
+      setMessages(prev => [...prev, {
+        id: nextMessageId(),
+        type: 'bot',
+        content: `✅ Pedido actualizado. Nuevo subtotal: COP $${newTotal.toLocaleString('es-CO')}\n\n¿Cuál es el descuento? (% — escribe 0 si no aplica)`,
+        timestamp: new Date()
+      }]);
+      setConversationState('rem_awaiting_discount');
+    } catch (err) {
+      setMessages(prev => [...prev, {
+        id: nextMessageId(),
+        type: 'bot',
+        content: `❌ ${err instanceof Error ? err.message : 'No se pudo guardar la edición'}. Intenta de nuevo.`,
+        timestamp: new Date()
+      }]);
+    } finally {
+      setIsSavingRemEdit(false);
+    }
   };
 
   const submitRemision = async () => {
@@ -1420,8 +1580,7 @@ export default function ChatInterface() {
         body: JSON.stringify({
           discount_percent: remDiscount,
           freight_value: remFreight,
-          returns_value: remReturnsValue,
-          returns_reason: remReturnsReason || null,
+          returns: remReturns,
         })
       });
       const liqData = await liqRes.json();
@@ -1475,9 +1634,11 @@ export default function ChatInterface() {
     setRemMatches([]);
     setRemDiscount(0);
     setRemFreight(0);
-    setRemReturnsValue(0);
-    setRemReturnsReason('');
+    setRemReturns([]);
+    setRemReturnDraft(null);
     setRemResult(null);
+    setShowRemEditModal(false);
+    setRemEditItems([]);
   };
 
   const handleSelectMode = (newMode: ChatMode) => {
@@ -1502,10 +1663,15 @@ export default function ChatInterface() {
     conversationState === 'awaiting_address' ? 'Dirección completa...' :
     conversationState === 'rem_awaiting_order_id' ? 'Pedido, remisión o nombre del cliente...' :
     conversationState === 'rem_choosing_match' ? 'Número de la opción...' :
+    conversationState === 'rem_awaiting_edit_choice' ? 'sí / no...' :
     conversationState === 'rem_awaiting_discount' ? 'Descuento % (0 si no aplica)...' :
     conversationState === 'rem_awaiting_freight' ? 'Valor del flete (0 si no aplica)...' :
-    conversationState === 'rem_awaiting_returns_value' ? 'Valor devoluciones/daños (0 si no aplica)...' :
-    conversationState === 'rem_awaiting_returns_reason' ? 'Motivo de la devolución o daño...' :
+    conversationState === 'rem_awaiting_returns_yn' ? 'sí / no...' :
+    conversationState === 'rem_awaiting_return_ref' ? 'Referencia...' :
+    conversationState === 'rem_awaiting_return_qty' ? 'Cantidad...' :
+    conversationState === 'rem_awaiting_return_price' ? 'Precio unitario...' :
+    conversationState === 'rem_awaiting_return_reason' ? 'Motivo de la devolución/garantía...' :
+    conversationState === 'rem_awaiting_return_more' ? 'sí / no...' :
     conversationState === 'rem_confirming' ? 'sí / no...' :
     'Cantidad, número o mensaje...';
 
@@ -2186,6 +2352,75 @@ export default function ChatInterface() {
         </div>
       )}
 
+      {/* Modal Editar Pedido (remisión) — el vendedor cambia cantidades/precios o borra renglones antes de liquidar */}
+      {showRemEditModal && (
+        <div className="fixed inset-0 bg-black/50 flex items-end sm:items-center justify-center z-50 p-0 sm:p-4">
+          <div className="bg-white rounded-t-2xl sm:rounded-2xl shadow-xl w-full sm:max-w-2xl flex flex-col max-h-[92dvh]">
+            <div className="flex items-center justify-between px-5 pt-5 pb-4 border-b flex-shrink-0">
+              <div>
+                <h2 className="text-base font-bold text-gray-800">Editar pedido</h2>
+                <p className="text-xs text-gray-400 mt-0.5">{remOrder?.id} — {remOrder?.customer}</p>
+              </div>
+              <button onClick={cancelRemEdit} className="p-1.5 hover:bg-gray-100 rounded-full transition-colors">
+                <X size={20} className="text-gray-500" />
+              </button>
+            </div>
+
+            <div className="px-5 py-4 overflow-y-auto space-y-2">
+              {remEditItems.map((item, i) => (
+                <div key={`${item.ref}_${i}`} className="flex items-center gap-2 border-b border-gray-100 pb-2">
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm text-gray-700 truncate">{item.name}</p>
+                    <p className="text-xs text-gray-400 font-mono">{item.ref}</p>
+                  </div>
+                  <input
+                    type="number" min="0" value={item.quantity}
+                    onChange={e => updateRemEditItem(i, { quantity: Math.max(0, parseInt(e.target.value) || 0) })}
+                    className="w-16 px-2 py-1.5 border rounded-lg text-right text-sm"
+                  />
+                  <input
+                    type="number" min="0" value={item.price ?? 0}
+                    onChange={e => updateRemEditItem(i, { price: parseFloat(e.target.value) || 0 })}
+                    className="w-24 px-2 py-1.5 border rounded-lg text-right text-sm"
+                  />
+                  <button
+                    onClick={() => removeRemEditItem(i)}
+                    className="p-1.5 text-red-500 hover:bg-red-50 rounded-lg transition-colors flex-shrink-0"
+                    title="Quitar (sin existencia)"
+                  >
+                    <X size={16} />
+                  </button>
+                </div>
+              ))}
+              {remEditItems.length === 0 && (
+                <p className="text-sm text-gray-400 text-center py-6">Sin ítems — todo fue quitado del pedido.</p>
+              )}
+            </div>
+
+            <div className="px-5 py-4 border-t bg-gray-50 rounded-b-2xl flex justify-between items-center gap-3 flex-shrink-0">
+              <span className="text-sm font-semibold text-gray-700">
+                Total: COP ${remEditItems.reduce((s, i) => s + (i.price || 0) * i.quantity, 0).toLocaleString('es-CO')}
+              </span>
+              <div className="flex gap-2">
+                <button
+                  onClick={cancelRemEdit}
+                  className="py-2.5 px-4 border border-gray-300 rounded-xl text-sm font-medium text-gray-700 hover:bg-gray-100 active:scale-95 transition-all"
+                >
+                  Cancelar
+                </button>
+                <button
+                  onClick={saveRemEdit}
+                  disabled={isSavingRemEdit}
+                  className="py-2.5 px-4 bg-[#00a884] text-white rounded-xl text-sm font-semibold hover:bg-[#008f6f] active:scale-95 transition-all disabled:opacity-60 disabled:cursor-not-allowed"
+                >
+                  {isSavingRemEdit ? 'Guardando...' : '✓ Guardar cambios'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Pantalla de éxito — pedido confirmado */}
       {conversationState === 'completed' && confirmedOrder && (
         <div className="fixed inset-0 bg-[#efeae2] z-50 flex flex-col overflow-y-auto">
@@ -2297,17 +2532,23 @@ export default function ChatInterface() {
 
           {/* Acciones finales */}
           <div className="px-4 pb-8 pt-2 flex-shrink-0 max-w-lg mx-auto w-full space-y-3">
-            <a
-              href={buildWhatsAppNotifyUrl(confirmedOrder)}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="w-full py-3.5 bg-[#25D366] text-white rounded-2xl font-bold text-base shadow-lg hover:bg-[#1fb958] active:scale-[0.98] transition-all flex items-center justify-center gap-2"
-            >
-              <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true">
-                <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/>
-              </svg>
-              Notificar pedido por WhatsApp
-            </a>
+            {confirmedOrder.pendingSync ? (
+              <div className="w-full py-3.5 bg-gray-100 text-gray-500 rounded-2xl font-medium text-sm text-center px-4">
+                📴 Podrás notificar por WhatsApp cuando termine de sincronizar — el link del PDF no funciona hasta entonces
+              </div>
+            ) : (
+              <a
+                href={buildWhatsAppNotifyUrl(confirmedOrder)}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="w-full py-3.5 bg-[#25D366] text-white rounded-2xl font-bold text-base shadow-lg hover:bg-[#1fb958] active:scale-[0.98] transition-all flex items-center justify-center gap-2"
+              >
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true">
+                  <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/>
+                </svg>
+                Notificar pedido por WhatsApp
+              </a>
+            )}
             <button
               onClick={handleNuevoPedido}
               className="w-full py-3.5 bg-[#00a884] text-white rounded-2xl font-bold text-base shadow-lg hover:bg-[#008f6f] active:scale-[0.98] transition-all"

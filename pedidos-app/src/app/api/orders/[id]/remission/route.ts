@@ -81,12 +81,24 @@ export async function POST(
       );
     }
 
-    const remissionId = `REM-${Math.floor(1000 + Math.random() * 9000)}`;
     const total = payload.items.reduce(
       (sum, i) => sum + (i.price || 0) * (i.packed_quantity || 0), 0
     );
 
-    const { error: remErr } = await getSupabase().from('remissions').insert([{
+    // Un mismo pedido no debe acumular remisiones nuevas cada vez que bodega
+    // vuelve a fotografiar/confirmar el empaque (ej: corrigiendo un error) —
+    // se reutiliza la remisión existente en vez de crear una fila más.
+    const { data: existingRemission } = await getSupabase()
+      .from('remissions')
+      .select('id')
+      .eq('order_id', orderId)
+      .order('created_at', { ascending: true })
+      .limit(1)
+      .maybeSingle();
+
+    const remissionId = existingRemission?.id || `REM-${Math.floor(1000 + Math.random() * 9000)}`;
+
+    const remissionRow = {
       id: remissionId,
       order_id: orderId,
       total,
@@ -97,8 +109,35 @@ export async function POST(
       packing_date: payload.packing?.packing_date || null,
       boxes_count: payload.packing?.boxes_count ?? null,
       notes: payload.notes || null,
-    }]);
-    if (remErr) throw remErr;
+    };
+
+    if (existingRemission) {
+      // Re-empacar invalida cualquier revisión/liquidación previa sobre los
+      // datos viejos — hay que volver a revisar y liquidar con lo nuevo.
+      const { error: updErr } = await getSupabase()
+        .from('remissions')
+        .update({
+          ...remissionRow,
+          reviewed_at: null,
+          liquidated_at: null,
+          liquidated_total: null,
+          discount_percent: 0,
+          freight_value: 0,
+          returns_value: 0,
+          returns_reason: null,
+        })
+        .eq('id', remissionId);
+      if (updErr) throw updErr;
+
+      const { error: delErr } = await getSupabase()
+        .from('remission_items')
+        .delete()
+        .eq('remission_id', remissionId);
+      if (delErr) throw delErr;
+    } else {
+      const { error: remErr } = await getSupabase().from('remissions').insert([remissionRow]);
+      if (remErr) throw remErr;
+    }
 
     const itemsToInsert = payload.items.map(i => ({
       remission_id: remissionId,
@@ -127,7 +166,7 @@ export async function POST(
     return NextResponse.json({
       success: true,
       remission: { id: remissionId, order_id: orderId, total },
-      message: `Remisión ${remissionId} creada`
+      message: existingRemission ? `Remisión ${remissionId} actualizada` : `Remisión ${remissionId} creada`
     });
   } catch (error) {
     console.error('POST /api/orders/[id]/remission error:', error);

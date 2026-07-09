@@ -120,7 +120,7 @@ export default function RemissionsInbox({ role }: Props) {
     }
     setExpanded(rem.id);
     setActionError(null);
-    if (!isVendor && !rem.reviewed_at) {
+    if (!isVendor) {
       const drafts: Record<string, { packed_quantity: number; status: RemissionListItem['status'] }> = {};
       rem.items.forEach(item => {
         drafts[item.id] = { packed_quantity: item.packed_quantity, status: item.status };
@@ -338,7 +338,10 @@ export default function RemissionsInbox({ role }: Props) {
 
                   {/* Detalle expandible — comparativo vendido vs empacado */}
                   {expanded === rem.id && (() => {
-                    const canEdit = !isVendor && !rem.reviewed_at;
+                    // Secretaría puede seguir corrigiendo cantidades/estado aunque la
+                    // remisión ya se haya marcado como revisada o liquidado antes —
+                    // se puede editar y volver a liquidar cuantas veces sea necesario.
+                    const canEdit = !isVendor;
                     const soldUnits = rem.items.reduce((s, i) => s + (i.ordered_quantity || 0), 0);
                     const packedUnits = rem.items.reduce((s, i) => s + (itemDrafts[i.id]?.packed_quantity ?? i.packed_quantity ?? 0), 0);
                     const soldTotal = rem.items.reduce((s, i) => s + (i.ordered_quantity || 0) * (i.price || 0), 0);
@@ -449,6 +452,7 @@ export default function RemissionsInbox({ role }: Props) {
                             >
                               {isSavingItems ? 'Guardando...' : 'Guardar cambios'}
                             </button>
+                            {!rem.reviewed_at && (
                             <button
                               onClick={() => finalizeRemission(rem)}
                               disabled={isSavingItems || isFinalizing}
@@ -456,6 +460,7 @@ export default function RemissionsInbox({ role }: Props) {
                             >
                               <CheckCircle2 size={13} /> {isFinalizing ? 'Guardando...' : 'Guardar para facturar'}
                             </button>
+                            )}
                           </>
                         )}
                       </div>

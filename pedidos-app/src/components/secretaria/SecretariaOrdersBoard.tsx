@@ -107,6 +107,12 @@ export default function SecretariaOrdersBoard() {
     setEditingItems(prev => prev.map((item, i) => i === index ? { ...item, ...patch } : item));
   };
 
+  // El backend ya borra en el servidor cualquier ítem que no venga en el
+  // array al guardar (PUT /api/orders/[id]) — esto solo lo quita del borrador local.
+  const removeItem = (index: number) => {
+    setEditingItems(prev => prev.filter((_, i) => i !== index));
+  };
+
   const save = async () => {
     if (!selectedOrder) return;
     setIsSaving(true);
@@ -218,7 +224,7 @@ export default function SecretariaOrdersBoard() {
             ) : (
               <div className="p-4 sm:p-6">
                 <div className="overflow-x-auto -mx-4 sm:mx-0">
-                  <table className="w-full text-xs min-w-[1300px]">
+                  <table className="w-full text-xs min-w-[1340px]">
                     <thead>
                       <tr className="bg-gray-50 text-gray-500 uppercase text-[10px]">
                         <th className="px-2 py-2 text-left">Referencia</th>
@@ -233,6 +239,7 @@ export default function SecretariaOrdersBoard() {
                         <th className="px-2 py-2 text-right">Costo</th>
                         <th className="px-2 py-2 text-right">Costo Real</th>
                         <th className="px-2 py-2 text-right">Cant. Devuelta</th>
+                        <th className="px-2 py-2"></th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-100">
@@ -279,6 +286,15 @@ export default function SecretariaOrdersBoard() {
                             <input type="number" min="0" value={item.returned_quantity}
                               onChange={e => updateItem(i, { returned_quantity: Math.max(0, parseFloat(e.target.value) || 0) })}
                               className="w-20 px-1.5 py-1 border rounded text-right" />
+                          </td>
+                          <td className="px-2 py-1.5">
+                            <button
+                              onClick={() => removeItem(i)}
+                              className="p-1 text-red-500 hover:bg-red-50 rounded transition-colors"
+                              title="Quitar (sin existencia)"
+                            >
+                              <X size={14} />
+                            </button>
                           </td>
                         </tr>
                       ))}

@@ -34,6 +34,11 @@ export async function GET(
       return NextResponse.json({ error: 'La remisión aún no ha sido liquidada' }, { status: 400 });
     }
 
+    const { data: returnItems } = await getSupabase()
+      .from('remission_returns')
+      .select('product_ref, product_name, quantity, price, reason')
+      .eq('remission_id', remissionId);
+
     const order = (Array.isArray(rem.orders) ? rem.orders[0] : rem.orders) as any;
     const rawCustomers = order?.customers;
     const c = (Array.isArray(rawCustomers) ? rawCustomers[0] : rawCustomers) as any;
@@ -103,8 +108,7 @@ export async function GET(
     // Liquidación: total, deducciones y total liquidado
     const pageHeight = doc.internal.pageSize.getHeight();
     let yL = y;
-    const reasonLines = rem.returns_reason ? 1 : 0;
-    if (yL + 45 + reasonLines * 8 > pageHeight - 12) {
+    if (yL + 45 > pageHeight - 12) {
       doc.addPage();
       yL = 20;
     }
@@ -119,11 +123,8 @@ export async function GET(
       ['Total remisión', fmt(total)],
       [`Descuento (${discountPercent}%)`, `- ${fmt(discountAmount)}`],
       ['Flete', `- ${fmt(freightValue)}`],
-      ['Devoluciones / daños', `- ${fmt(returnsValue)}`],
+      ['Devoluciones / garantías', `- ${fmt(returnsValue)}`],
     ];
-    if (rem.returns_reason) {
-      liqBody.push(['Motivo devolución/daño', rem.returns_reason]);
-    }
     liqBody.push([
       { content: 'TOTAL LIQUIDADO', styles: { fontStyle: 'bold', fontSize: 10 } },
       { content: fmt(liquidatedTotal), styles: { fontStyle: 'bold', fontSize: 10, textColor: [109, 40, 217] } },
@@ -138,14 +139,45 @@ export async function GET(
         0: { fontStyle: 'bold', cellWidth: 60, fillColor: [245, 245, 245] },
         1: { cellWidth: contentWidth - 60, halign: 'right' },
       },
-      didParseCell: (data) => {
-        // El motivo va alineado a la izquierda, no es una cifra
-        if (data.column.index === 1 && typeof data.cell.raw === 'string' && data.cell.raw === rem.returns_reason) {
-          data.cell.styles.halign = 'left';
-        }
-      },
       margin: { left: margin, right: margin },
     });
+    y = (doc as any).lastAutoTable.finalY + 6;
+
+    // Detalle de devoluciones/garantías por referencia
+    if (returnItems && returnItems.length > 0) {
+      let yR = y;
+      if (yR + 20 + returnItems.length * 7 > pageHeight - 12) {
+        doc.addPage();
+        yR = 20;
+      }
+      doc.setFontSize(9);
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(0, 0, 0);
+      doc.text('DETALLE DE DEVOLUCIONES / GARANTÍAS', margin, yR);
+      yR += 3;
+
+      autoTable(doc, {
+        startY: yR,
+        head: [['Ref', 'Producto', 'Cant.', 'Precio', 'Subtotal', 'Motivo']],
+        body: returnItems.map(r => [
+          r.product_ref,
+          r.product_name || '',
+          String(r.quantity),
+          fmt(r.price),
+          fmt(r.quantity * r.price),
+          r.reason || '',
+        ]),
+        theme: 'grid',
+        styles: { fontSize: 8, cellPadding: 2 },
+        headStyles: { fillColor: [109, 40, 217] },
+        columnStyles: {
+          2: { halign: 'right' },
+          3: { halign: 'right' },
+          4: { halign: 'right' },
+        },
+        margin: { left: margin, right: margin },
+      });
+    }
 
     // Footer
     doc.setFontSize(7);

@@ -48,7 +48,7 @@ const toMatch = (r: RemissionRow) => ({
   })),
 });
 
-// GET: el vendedor busca en el chat una remisión ya finalizada por secretaría,
+// GET: el vendedor busca en el chat una remisión de su pedido,
 // por # de pedido, # de remisión o nombre de cliente.
 export async function GET(request: NextRequest) {
   try {
@@ -98,11 +98,12 @@ export async function GET(request: NextRequest) {
       }
     }
 
+    // El vendedor puede encontrar y volver a liquidar cualquier remisión de su
+    // pedido en cualquier momento — no se exige revisión previa de secretaría
+    // ni se excluyen las ya liquidadas (liquidar es repetible, mismo número).
     let query = supabase
       .from('remissions')
       .select(SELECT)
-      .not('reviewed_at', 'is', null)
-      .is('liquidated_at', null)
       .order('created_at', { ascending: false })
       .limit(10);
 
