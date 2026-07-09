@@ -4,6 +4,7 @@ import { getSupabase } from '@/lib/supabase-server';
 export const dynamic = 'force-dynamic';
 
 interface RemissionItemRow {
+  id: string;
   product_ref: string;
   product_name: string;
   ordered_quantity: number;
@@ -21,6 +22,7 @@ interface RemissionRow {
   verifier_name: string | null;
   boxes_count: number | null;
   created_at: string;
+  reviewed_at: string | null;
   remission_items: RemissionItemRow[] | null;
   orders: {
     id: string;
@@ -46,7 +48,8 @@ export async function GET(request: NextRequest) {
         verifier_name,
         boxes_count,
         created_at,
-        remission_items (product_ref, product_name, ordered_quantity, packed_quantity, price_at_time, unit_type, item_status),
+        reviewed_at,
+        remission_items (id, product_ref, product_name, ordered_quantity, packed_quantity, price_at_time, unit_type, item_status),
         orders!inner (id, vendor_name, delivery_address, customers (name, city))
       `)
       .order('created_at', { ascending: false })
@@ -69,6 +72,7 @@ export async function GET(request: NextRequest) {
         verifier_name: r.verifier_name,
         boxes_count: r.boxes_count,
         created_at: r.created_at,
+        reviewed_at: r.reviewed_at,
         vendor_name: r.orders?.vendor_name || '',
         customer: r.orders?.customers?.name || 'Sin nombre',
         city: r.orders?.customers?.city || '',
@@ -81,6 +85,7 @@ export async function GET(request: NextRequest) {
           agregado: items.filter(i => i.item_status === 'agregado').length,
         },
         items: items.map(i => ({
+          id: i.id,
           ref: i.product_ref,
           name: i.product_name,
           ordered_quantity: i.ordered_quantity,

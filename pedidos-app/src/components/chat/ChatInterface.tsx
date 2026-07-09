@@ -51,6 +51,7 @@ interface Message {
     pendingQuantity?: boolean;
     pendingPriceConfirm?: boolean;
     variantOptions?: { ref: string; name: string; price: number | null }[];
+    remissionOptions?: RemissionMatch[];
   };
 }
 
@@ -73,6 +74,7 @@ type ConversationState =
   | 'ready'
   | 'completed'
   | 'rem_awaiting_order_id'
+  | 'rem_choosing_match'
   | 'rem_awaiting_discount'
   | 'rem_awaiting_freight'
   | 'rem_awaiting_returns_value'
@@ -97,6 +99,16 @@ interface RemissionOrder {
   vendor_name: string;
   items: RemissionOrderItem[];
   total: number;
+}
+
+interface RemissionMatch {
+  remissionId: string;
+  orderId: string;
+  customerName: string;
+  phone?: string;
+  total: number;
+  createdAt?: string;
+  items: RemissionOrderItem[];
 }
 
 interface CustomerData {
@@ -159,6 +171,8 @@ export default function ChatInterface() {
   const [conversationState, setConversationState] = useState<ConversationState>('awaiting_vendor');
   const [mode, setMode] = useState<ChatMode>('pedido');
   const [remOrder, setRemOrder] = useState<RemissionOrder | null>(null);
+  const [remRemissionId, setRemRemissionId] = useState<string | null>(null);
+  const [remMatches, setRemMatches] = useState<RemissionMatch[]>([]);
   const [remDiscount, setRemDiscount] = useState(0);
   const [remFreight, setRemFreight] = useState(0);
   const [remReturnsValue, setRemReturnsValue] = useState(0);
@@ -652,7 +666,7 @@ export default function ChatInterface() {
       if (mode === 'remision') {
         setMessages(prev => [...prev,
           { id: nextMessageId(), type: 'user', content: name, timestamp: new Date() },
-          { id: nextMessageId(), type: 'bot', content: `¡Listo, ${name}! 🧾 ¿Cuál es el número del pedido que quieres liquidar? (Ej: ORD-1234)`, timestamp: new Date() }
+          { id: nextMessageId(), type: 'bot', content: `¡Listo, ${name}! 🧾 ¿Cuál es el pedido, la remisión o el nombre del cliente que quieres liquidar? (Ej: ORD-1234, REM-1234 o "Juan Pérez")`, timestamp: new Date() }
         ]);
         setConversationState('rem_awaiting_order_id');
         return;
@@ -668,42 +682,56 @@ export default function ChatInterface() {
 
     // ══════════════ FLUJO DE REMISIÓN (liquidación desde el chat) ══════════════
 
-    // ── NÚMERO DE PEDIDO ──
+    // ── BUSCAR PEDIDO / REMISIÓN / CLIENTE ──
     if (conversationState === 'rem_awaiting_order_id') {
-      const raw = inputText.trim().toUpperCase();
-      const orderId = /^ORD-/.test(raw) ? raw : `ORD-${raw}`;
+      const raw = inputText.trim();
       setMessages(prev => [...prev, { id: nextMessageId(), type: 'user', content: raw, timestamp: new Date() }]);
       setInputText('');
       setIsProcessing(true);
       try {
-        const res = await fetch(`/api/orders/${encodeURIComponent(orderId)}`);
+        const res = await fetch(`/api/remissions/search?q=${encodeURIComponent(raw)}`);
         const data = await res.json();
         if (!res.ok || !data.success) {
-          setMessages(prev => [...prev, { id: nextMessageId(), type: 'bot', content: `❌ No encontré el pedido ${orderId}. Verifica el número e intenta de nuevo.`, timestamp: new Date() }]);
+          setMessages(prev => [...prev, { id: nextMessageId(), type: 'bot', content: '❌ Error buscando. Intenta de nuevo.', timestamp: new Date() }]);
           return;
         }
-        const order = data.order;
-        setRemOrder({
-          id: order.id,
-          customer: order.customer,
-          phone: order.phone || '',
-          vendor_name: order.vendor_name || vendorName,
-          items: order.items,
-          total: order.total,
-        });
-        const itemsList = order.items.map((i: RemissionOrderItem) => `• ${i.name} ×${i.quantity}`).join('\n');
+        const matches: RemissionMatch[] = data.matches || [];
+        if (matches.length === 0) {
+          setMessages(prev => [...prev, { id: nextMessageId(), type: 'bot', content: `❌ No encontré ninguna remisión lista para facturar con "${raw}". Verifica el pedido, la remisión o el nombre, o espera a que secretaría la finalice.`, timestamp: new Date() }]);
+          return;
+        }
+        if (matches.length === 1) {
+          resolveRemissionMatch(matches[0]);
+          return;
+        }
+        setRemMatches(matches);
         setMessages(prev => [...prev, {
           id: nextMessageId(),
           type: 'bot',
-          content: `✅ Pedido ${order.id} — ${order.customer}\n${itemsList}\nSubtotal: COP $${order.total.toLocaleString('es-CO')}\n\n¿Cuál es el descuento? (% — escribe 0 si no aplica)`,
-          timestamp: new Date()
+          content: `Encontré ${matches.length} remisiones. Elige una (responde con el número o toca una opción):`,
+          timestamp: new Date(),
+          metadata: { remissionOptions: matches }
         }]);
-        setConversationState('rem_awaiting_discount');
+        setConversationState('rem_choosing_match');
       } catch {
-        setMessages(prev => [...prev, { id: nextMessageId(), type: 'bot', content: '❌ Error buscando el pedido. Intenta de nuevo.', timestamp: new Date() }]);
+        setMessages(prev => [...prev, { id: nextMessageId(), type: 'bot', content: '❌ Error buscando. Intenta de nuevo.', timestamp: new Date() }]);
       } finally {
         setIsProcessing(false);
       }
+      return;
+    }
+
+    // ── ELEGIR ENTRE VARIAS REMISIONES ──
+    if (conversationState === 'rem_choosing_match') {
+      const raw = inputText.trim();
+      setMessages(prev => [...prev, { id: nextMessageId(), type: 'user', content: raw, timestamp: new Date() }]);
+      setInputText('');
+      const n = parseInt(raw, 10);
+      if (isNaN(n) || n < 1 || n > remMatches.length) {
+        setMessages(prev => [...prev, { id: nextMessageId(), type: 'bot', content: `❌ Responde con un número entre 1 y ${remMatches.length}, o toca una opción de la lista.`, timestamp: new Date() }]);
+        return;
+      }
+      resolveRemissionMatch(remMatches[n - 1]);
       return;
     }
 
@@ -780,7 +808,7 @@ export default function ChatInterface() {
       if (/^(si|sí|s|ok|yes|y|claro|listo|dale|confirmo|correcto)$/i.test(resp)) {
         await submitRemision();
       } else {
-        setMessages(prev => [...prev, { id: nextMessageId(), type: 'bot', content: '¿Cuál es el número del pedido que quieres liquidar? (Ej: ORD-1234)', timestamp: new Date() }]);
+        setMessages(prev => [...prev, { id: nextMessageId(), type: 'bot', content: '¿Cuál es el pedido, la remisión o el nombre del cliente que quieres liquidar?', timestamp: new Date() }]);
         setConversationState('rem_awaiting_order_id');
       }
       return;
@@ -1175,6 +1203,31 @@ export default function ChatInterface() {
     }]);
   };
 
+  const resolveRemissionMatch = (match: RemissionMatch) => {
+    setRemOrder({
+      id: match.orderId,
+      customer: match.customerName,
+      phone: match.phone || '',
+      vendor_name: vendorName,
+      items: match.items,
+      total: match.total,
+    });
+    setRemRemissionId(match.remissionId);
+    const itemsList = match.items.map(i => `• ${i.name} ×${i.quantity}`).join('\n');
+    setMessages(prev => [...prev, {
+      id: nextMessageId(),
+      type: 'bot',
+      content: `✅ ${match.remissionId} — ${match.customerName}\n${itemsList}\nSubtotal: COP $${match.total.toLocaleString('es-CO')}\n\n¿Cuál es el descuento? (% — escribe 0 si no aplica)`,
+      timestamp: new Date()
+    }]);
+    setConversationState('rem_awaiting_discount');
+  };
+
+  const handleSelectRemissionMatch = (match: RemissionMatch) => {
+    setMessages(prev => [...prev, { id: nextMessageId(), type: 'user', content: `${match.remissionId} — ${match.customerName}`, timestamp: new Date() }]);
+    resolveRemissionMatch(match);
+  };
+
   const handleSelectVariant = (option: { ref: string; name: string; price: number | null }) => {
     setMessages(prev => [...prev, { id: nextMessageId(), type: 'user', content: option.name, timestamp: new Date() }]);
     setActiveProduct({
@@ -1357,28 +1410,10 @@ export default function ChatInterface() {
   };
 
   const submitRemision = async () => {
-    if (!remOrder) return;
+    if (!remOrder || !remRemissionId) return;
     setIsSending(true);
     try {
-      const remissionItems = remOrder.items.map(i => ({
-        ref: i.ref,
-        name: i.name,
-        ordered_quantity: i.quantity,
-        packed_quantity: i.quantity,
-        price: i.price || 0,
-        unit_type: i.unit_type || 'unidad',
-        status: 'completo' as const,
-      }));
-
-      const createRes = await fetch(`/api/orders/${remOrder.id}/remission`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ items: remissionItems, packing: { packer_name: vendorName } })
-      });
-      const createData = await createRes.json();
-      if (!createRes.ok || !createData.success) throw new Error(createData.message || 'Error creando la remisión');
-
-      const remissionId = createData.remission.id;
+      const remissionId = remRemissionId;
       const liqRes = await fetch(`/api/remissions/${remissionId}/liquidate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1436,6 +1471,8 @@ export default function ChatInterface() {
     setSearchResults([]);
     setMode('pedido');
     setRemOrder(null);
+    setRemRemissionId(null);
+    setRemMatches([]);
     setRemDiscount(0);
     setRemFreight(0);
     setRemReturnsValue(0);
@@ -1463,7 +1500,8 @@ export default function ChatInterface() {
     conversationState === 'awaiting_city' ? 'Ciudad...' :
     conversationState === 'awaiting_departamento' ? 'Departamento...' :
     conversationState === 'awaiting_address' ? 'Dirección completa...' :
-    conversationState === 'rem_awaiting_order_id' ? 'Ej: ORD-1234 o 1234...' :
+    conversationState === 'rem_awaiting_order_id' ? 'Pedido, remisión o nombre del cliente...' :
+    conversationState === 'rem_choosing_match' ? 'Número de la opción...' :
     conversationState === 'rem_awaiting_discount' ? 'Descuento % (0 si no aplica)...' :
     conversationState === 'rem_awaiting_freight' ? 'Valor del flete (0 si no aplica)...' :
     conversationState === 'rem_awaiting_returns_value' ? 'Valor devoluciones/daños (0 si no aplica)...' :
@@ -1680,6 +1718,23 @@ export default function ChatInterface() {
                         <p className="text-sm font-medium text-gray-800 leading-snug">{opt.name}</p>
                         <p className="text-xs text-[#00a884] font-semibold mt-0.5">
                           {opt.ref} · {opt.price != null ? `COP $${opt.price.toLocaleString('es-CO')}` : 'Sin precio'}
+                        </p>
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {msg.metadata?.remissionOptions && (
+                  <div className="mt-2 space-y-1.5">
+                    {msg.metadata.remissionOptions.map((match, i) => (
+                      <button
+                        key={match.remissionId}
+                        onClick={() => handleSelectRemissionMatch(match)}
+                        disabled={conversationState !== 'rem_choosing_match'}
+                        className="w-full text-left bg-[#f0fdf8] border border-[#00a884]/30 rounded-lg px-3 py-2 hover:bg-[#dcfce7] active:scale-[0.98] transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        <p className="text-sm font-medium text-gray-800 leading-snug">{i + 1}. {match.customerName}</p>
+                        <p className="text-xs text-[#00a884] font-semibold mt-0.5">
+                          {match.remissionId} · {match.orderId} · COP ${match.total.toLocaleString('es-CO')}
                         </p>
                       </button>
                     ))}

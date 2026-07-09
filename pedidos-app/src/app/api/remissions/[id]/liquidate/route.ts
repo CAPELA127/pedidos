@@ -45,7 +45,7 @@ export async function POST(
 
     const { data: rem, error: fetchErr } = await getSupabase()
       .from('remissions')
-      .select('id, total')
+      .select('id, total, reviewed_at')
       .eq('id', remissionId)
       .single();
 
@@ -53,6 +53,13 @@ export async function POST(
       return NextResponse.json(
         { success: false, message: 'Remisión no encontrada' },
         { status: 404 }
+      );
+    }
+
+    if (!rem.reviewed_at) {
+      return NextResponse.json(
+        { success: false, message: 'Esta remisión aún no ha sido revisada por secretaría' },
+        { status: 400 }
       );
     }
 

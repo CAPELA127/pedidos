@@ -22,8 +22,7 @@ export async function GET(
         orders (
           id, vendor_name, delivery_address,
           customers (name, email, phone, local_name, city, neighborhood, address)
-        ),
-        remission_items (product_ref, product_name, ordered_quantity, packed_quantity, price_at_time, unit_type, item_status, notes)
+        )
       `)
       .eq('id', remissionId)
       .single();
@@ -38,8 +37,6 @@ export async function GET(
     const order = (Array.isArray(rem.orders) ? rem.orders[0] : rem.orders) as any;
     const rawCustomers = order?.customers;
     const c = (Array.isArray(rawCustomers) ? rawCustomers[0] : rawCustomers) as any;
-    const items = ((rem.remission_items as any[]) || []).sort((a, b) =>
-      String(a.product_ref).localeCompare(String(b.product_ref)));
 
     const total = rem.total || 0;
     const discountPercent = rem.discount_percent || 0;
@@ -103,51 +100,9 @@ export async function GET(
     });
     y = (doc as any).lastAutoTable.finalY + 6;
 
-    // Tabla de productos empacados
-    doc.setFont('helvetica', 'bold');
-    doc.text('PRODUCTOS', margin, y);
-    y += 3;
-
-    const productBody = items.map((item) => {
-      const subtotal = (item.price_at_time || 0) * (item.packed_quantity || 0);
-      const displayName = item.notes ? `${item.product_name}\n(${item.notes})` : item.product_name;
-      return [
-        item.product_ref,
-        displayName,
-        item.packed_quantity,
-        item.unit_type || 'unidad',
-        item.price_at_time ? fmt(item.price_at_time) : '-',
-        fmt(subtotal),
-      ];
-    });
-
-    autoTable(doc, {
-      startY: y,
-      head: [['REF', 'Producto', 'Cantidad', 'Unidad', 'Precio', 'Subtotal']],
-      body: productBody,
-      theme: 'grid',
-      styles: { fontSize: 7.5, cellPadding: 2, overflow: 'linebreak' },
-      headStyles: {
-        fillColor: [109, 40, 217],
-        textColor: [255, 255, 255],
-        fontStyle: 'bold',
-        halign: 'center',
-      },
-      columnStyles: {
-        0: { cellWidth: 28, halign: 'center' },
-        1: { cellWidth: 'auto' },
-        2: { cellWidth: 18, halign: 'center' },
-        3: { cellWidth: 18, halign: 'center' },
-        4: { cellWidth: 24, halign: 'right' },
-        5: { cellWidth: 26, halign: 'right' },
-      },
-      alternateRowStyles: { fillColor: [250, 248, 255] },
-      margin: { left: margin, right: margin },
-    });
-
     // Liquidación: total, deducciones y total liquidado
     const pageHeight = doc.internal.pageSize.getHeight();
-    let yL = (doc as any).lastAutoTable.finalY + 8;
+    let yL = y;
     const reasonLines = rem.returns_reason ? 1 : 0;
     if (yL + 45 + reasonLines * 8 > pageHeight - 12) {
       doc.addPage();
