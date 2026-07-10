@@ -25,6 +25,9 @@ const nextMessageId = () => `${Date.now()}_${messageSeq++}`;
 // Número que recibe la alerta de pedidos nuevos por WhatsApp (link wa.me, sin API)
 const WHATSAPP_NOTIFY_NUMBER = process.env.NEXT_PUBLIC_WHATSAPP_NOTIFY_NUMBER || '573183978679';
 
+// Cuenta de la compañía donde el cliente consigna el valor liquidado
+const BANK_ACCOUNT_TEXT = '💳 Datos para el pago:\nIMPORTADORA EL PUNTAZO\nBancolombia · Ahorros\nCuenta N.º 02900005768';
+
 const buildWhatsAppNotifyUrl = (order: { id: string; customer: string; vendor: string; total: number; items: OrderItem[] }) => {
   const totalUnits = order.items.reduce((s, i) => s + i.quantity, 0);
   const origin = typeof window !== 'undefined' ? window.location.origin : '';
@@ -79,6 +82,7 @@ type ConversationState =
   | 'rem_awaiting_discount'
   | 'rem_awaiting_freight'
   | 'rem_awaiting_returns_yn'
+  | 'rem_awaiting_returns_bulk'
   | 'rem_awaiting_return_ref'
   | 'rem_awaiting_return_qty'
   | 'rem_awaiting_return_price'
@@ -107,7 +111,7 @@ interface RemissionOrder {
 }
 
 interface RemissionMatch {
-  remissionId: string;
+  remissionId: string | null; // null = pedido que bodega no ha empacado (la remisión se crea al elegirlo)
   orderId: string;
   customerName: string;
   phone?: string;
@@ -506,6 +510,16 @@ export default function ChatInterface() {
   };
 
   const handleImageCapture = async (file: File) => {
+    // En la liquidación, una foto sirve para interpretar la lista de devoluciones,
+    // no para leer un producto del inventario.
+    if (conversationState === 'rem_awaiting_returns_bulk') {
+      const compressed = await compressImageInBrowser(file);
+      const url = URL.createObjectURL(compressed);
+      setMessages(prev => [...prev, { id: nextMessageId(), type: 'user', imageUrl: url, timestamp: new Date() }]);
+      await parseAndApplyReturns({ file: compressed });
+      return;
+    }
+
     const ocrStartTime = Date.now();
     const compressedFile = await compressImageInBrowser(file);
     const url = URL.createObjectURL(compressedFile);
@@ -721,18 +735,18 @@ export default function ChatInterface() {
         }
         const matches: RemissionMatch[] = data.matches || [];
         if (matches.length === 0) {
-          setMessages(prev => [...prev, { id: nextMessageId(), type: 'bot', content: `❌ No encontré ninguna remisión lista para facturar con "${raw}". Verifica el pedido, la remisión o el nombre, o espera a que secretaría la finalice.`, timestamp: new Date() }]);
+          setMessages(prev => [...prev, { id: nextMessageId(), type: 'bot', content: `❌ No encontré ningún pedido con "${raw}". Verifica el número del pedido, la remisión, la cédula o el nombre del cliente.`, timestamp: new Date() }]);
           return;
         }
         if (matches.length === 1) {
-          resolveRemissionMatch(matches[0]);
+          await resolveRemissionMatch(matches[0]);
           return;
         }
         setRemMatches(matches);
         setMessages(prev => [...prev, {
           id: nextMessageId(),
           type: 'bot',
-          content: `Encontré ${matches.length} remisiones. Elige una (responde con el número o toca una opción):`,
+          content: `Encontré ${matches.length} pedidos. Elige uno (responde con el número o toca una opción):`,
           timestamp: new Date(),
           metadata: { remissionOptions: matches }
         }]);
@@ -755,7 +769,7 @@ export default function ChatInterface() {
         setMessages(prev => [...prev, { id: nextMessageId(), type: 'bot', content: `❌ Responde con un número entre 1 y ${remMatches.length}, o toca una opción de la lista.`, timestamp: new Date() }]);
         return;
       }
-      resolveRemissionMatch(remMatches[n - 1]);
+      await resolveRemissionMatch(remMatches[n - 1]);
       return;
     }
 
@@ -811,12 +825,30 @@ export default function ChatInterface() {
       setMessages(prev => [...prev, { id: nextMessageId(), type: 'user', content: resp, timestamp: new Date() }]);
       setInputText('');
       if (/^(si|sí|s|ok|yes|y|claro|listo|dale|confirmo|correcto)$/i.test(resp)) {
+        setMessages(prev => [...prev, { id: nextMessageId(), type: 'bot', content: '📸 Sube o pega una *foto* de la lista de devoluciones, o ✍️ *pega/escribe* el texto (referencia, cantidad y motivo).\n\nYo las cruzo con lo facturado y descuento referencia por referencia. Escribe "manual" para cargarlas una por una, o "no" para omitir.', timestamp: new Date() }]);
+        setConversationState('rem_awaiting_returns_bulk');
+        return;
+      }
+      askRemConfirmation(remOrder, remDiscount, remFreight, remReturns);
+      return;
+    }
+
+    // ── DEVOLUCIONES EN BLOQUE (foto o texto pegado) ──
+    if (conversationState === 'rem_awaiting_returns_bulk') {
+      const raw = inputText.trim();
+      setMessages(prev => [...prev, { id: nextMessageId(), type: 'user', content: raw, timestamp: new Date() }]);
+      setInputText('');
+      if (/^(no|ninguna|omitir|skip|cancelar)$/i.test(raw)) {
+        askRemConfirmation(remOrder, remDiscount, remFreight, remReturns);
+        return;
+      }
+      if (/^manual$/i.test(raw)) {
         const refsList = (remOrder?.items || []).map(i => `• ${i.ref} — ${i.name}`).join('\n');
         setMessages(prev => [...prev, { id: nextMessageId(), type: 'bot', content: `¿Qué referencia tiene la garantía o devolución? Elige una de las facturadas en esta remisión:\n${refsList}`, timestamp: new Date() }]);
         setConversationState('rem_awaiting_return_ref');
         return;
       }
-      askRemConfirmation(remOrder, remDiscount, remFreight, remReturns);
+      await parseAndApplyReturns({ text: raw });
       return;
     }
 
@@ -1224,7 +1256,7 @@ export default function ChatInterface() {
 
   // ── Pegar imagen (Ctrl+V / ⌘V) ─────────────────────────────────────────────
   const handlePasteImage = (e: React.ClipboardEvent) => {
-    if (conversationState !== 'ready' || isProcessing) return;
+    if ((conversationState !== 'ready' && conversationState !== 'rem_awaiting_returns_bulk') || isProcessing) return;
     const items = Array.from(e.clipboardData?.items ?? []);
     // Buscar imagen en items (formato directo: image/png, image/jpeg, etc.)
     const imageItem = items.find(item => item.type.startsWith('image/'));
@@ -1269,7 +1301,7 @@ export default function ChatInterface() {
   // ── Drag & Drop ─────────────────────────────────────────────────────────────
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
-    if (conversationState === 'ready' && !isProcessing) setIsDraggingOver(true);
+    if ((conversationState === 'ready' || conversationState === 'rem_awaiting_returns_bulk') && !isProcessing) setIsDraggingOver(true);
   };
 
   const handleDragLeave = (e: React.DragEvent) => {
@@ -1282,7 +1314,7 @@ export default function ChatInterface() {
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
     setIsDraggingOver(false);
-    if (conversationState !== 'ready' || isProcessing) return;
+    if ((conversationState !== 'ready' && conversationState !== 'rem_awaiting_returns_bulk') || isProcessing) return;
     const file = e.dataTransfer.files[0];
     if (file && file.type.startsWith('image/')) {
       handleImageCapture(file);
@@ -1306,32 +1338,61 @@ export default function ChatInterface() {
     }]);
   };
 
-  const resolveRemissionMatch = (match: RemissionMatch) => {
+  const resolveRemissionMatch = async (match: RemissionMatch) => {
+    // Pedido que bodega no ha empacado: se genera la remisión desde los items
+    // del pedido para que el vendedor pueda liquidar sin esperar a nadie.
+    let resolved = match;
+    if (!resolved.remissionId) {
+      setIsProcessing(true);
+      try {
+        const res = await fetch('/api/remissions/from-order', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ orderId: match.orderId }),
+        });
+        const data = await res.json();
+        if (!res.ok || !data.success || !data.match?.remissionId) {
+          throw new Error(data.message || 'No se pudo preparar el pedido');
+        }
+        resolved = data.match as RemissionMatch;
+      } catch (err) {
+        setMessages(prev => [...prev, {
+          id: nextMessageId(),
+          type: 'bot',
+          content: `❌ ${err instanceof Error ? err.message : 'No se pudo preparar el pedido'}. Intenta de nuevo.`,
+          timestamp: new Date()
+        }]);
+        return;
+      } finally {
+        setIsProcessing(false);
+      }
+    }
+
     setRemOrder({
-      id: match.orderId,
-      customer: match.customerName,
-      phone: match.phone || '',
+      id: resolved.orderId,
+      customer: resolved.customerName,
+      phone: resolved.phone || '',
       vendor_name: vendorName,
-      items: match.items,
-      total: match.total,
+      items: resolved.items,
+      total: resolved.total,
     });
-    setRemRemissionId(match.remissionId);
+    setRemRemissionId(resolved.remissionId);
     setRemDiscount(0);
     setRemFreight(0);
     setRemReturns([]);
-    const itemsList = match.items.map(i => `• ${i.name} ×${i.quantity}`).join('\n');
+    const itemsList = resolved.items.map(i => `• ${i.name} ×${i.quantity}`).join('\n');
     setMessages(prev => [...prev, {
       id: nextMessageId(),
       type: 'bot',
-      content: `✅ ${match.remissionId} — ${match.customerName}\n${itemsList}\nSubtotal: COP $${match.total.toLocaleString('es-CO')}\n\n¿Quieres editar el pedido antes de continuar (cambiar cantidades/precios o quitar algo que no haya)? (sí/no)`,
+      content: `✅ ${resolved.orderId} (${resolved.remissionId}) — ${resolved.customerName}\n${itemsList}\nSubtotal: COP $${resolved.total.toLocaleString('es-CO')}\n\n¿Quieres editar el pedido antes de continuar (cambiar cantidades/precios o quitar algo que no haya)? (sí/no)`,
       timestamp: new Date()
     }]);
     setConversationState('rem_awaiting_edit_choice');
   };
 
   const handleSelectRemissionMatch = (match: RemissionMatch) => {
-    setMessages(prev => [...prev, { id: nextMessageId(), type: 'user', content: `${match.remissionId} — ${match.customerName}`, timestamp: new Date() }]);
-    resolveRemissionMatch(match);
+    setMessages(prev => [...prev, { id: nextMessageId(), type: 'user', content: `${match.remissionId ?? match.orderId} — ${match.customerName}`, timestamp: new Date() }]);
+    void resolveRemissionMatch(match);
   };
 
   const handleSelectVariant = (option: { ref: string; name: string; price: number | null }) => {
@@ -1499,6 +1560,63 @@ export default function ChatInterface() {
     }
   };
 
+  // Interpreta una foto o un texto pegado con las devoluciones/garantías, las
+  // cruza contra lo facturado y las acumula en remReturns (descuento ref por ref).
+  const parseAndApplyReturns = async (opts: { text?: string; file?: File }) => {
+    if (!remRemissionId) {
+      setMessages(prev => [...prev, { id: nextMessageId(), type: 'bot', content: '❌ No hay una remisión activa para cargar devoluciones.', timestamp: new Date() }]);
+      return;
+    }
+    setIsProcessing(true);
+    const loadingId = 'ret-loading-' + Date.now();
+    setMessages(prev => [...prev, { id: loadingId, type: 'bot', content: '🔍 Interpretando devoluciones...', timestamp: new Date() }]);
+    try {
+      let res: Response;
+      if (opts.file) {
+        const fd = new FormData();
+        fd.append('image', opts.file);
+        res = await fetch(`/api/remissions/${remRemissionId}/returns/parse`, { method: 'POST', body: fd });
+      } else {
+        res = await fetch(`/api/remissions/${remRemissionId}/returns/parse`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: opts.text || '' }),
+        });
+      }
+      const data = await res.json();
+      setMessages(prev => prev.filter(m => m.id !== loadingId));
+      if (!res.ok || !data.success) {
+        setMessages(prev => [...prev, { id: nextMessageId(), type: 'bot', content: `❌ ${data.message || 'No pude interpretar las devoluciones'}. Intenta con otra foto, pega el texto, o escribe "manual".`, timestamp: new Date() }]);
+        return;
+      }
+      const found: RemissionReturnItem[] = (data.returns || []).map((r: RemissionReturnItem) => ({
+        ref: r.ref, name: r.name, quantity: r.quantity, price: r.price, reason: r.reason,
+      }));
+      const unmatched: string[] = data.unmatched || [];
+      if (found.length === 0) {
+        const extra = unmatched.length > 0 ? `\n⚠️ No pude cruzar: ${unmatched.join(', ')} (no está facturado en esta remisión).` : '';
+        setMessages(prev => [...prev, { id: nextMessageId(), type: 'bot', content: `No encontré devoluciones válidas.${extra}\n\nIntenta con otra foto, pega el texto, escribe "manual" para cargarlas una a una, o "no" para omitir.`, timestamp: new Date() }]);
+        return;
+      }
+      // Acumula sobre lo ya cargado (misma referencia + motivo = reemplaza, no duplica).
+      const merged = [...remReturns];
+      for (const r of found) {
+        const i = merged.findIndex(m => m.ref.toUpperCase() === r.ref.toUpperCase() && m.reason.toLowerCase() === r.reason.toLowerCase());
+        if (i >= 0) merged[i] = r; else merged.push(r);
+      }
+      setRemReturns(merged);
+      const lines = found.map(r => `  • ${r.name} (${r.ref}) ×${r.quantity} @ COP $${r.price.toLocaleString('es-CO')} — ${r.reason}`);
+      const warn = unmatched.length > 0 ? `\n⚠️ No pude cruzar: ${unmatched.join(', ')}.` : '';
+      setMessages(prev => [...prev, { id: nextMessageId(), type: 'bot', content: `✅ Detecté ${found.length} devolución(es):\n${lines.join('\n')}${warn}`, timestamp: new Date() }]);
+      askRemConfirmation(remOrder, remDiscount, remFreight, merged);
+    } catch {
+      setMessages(prev => prev.filter(m => m.id !== loadingId));
+      setMessages(prev => [...prev, { id: nextMessageId(), type: 'bot', content: '❌ Error interpretando las devoluciones. Intenta de nuevo.', timestamp: new Date() }]);
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
   const askRemConfirmation = (
     order: RemissionOrder | null,
     discount: number,
@@ -1518,6 +1636,8 @@ export default function ChatInterface() {
       returns.length > 0 ? `Devoluciones/garantías: -COP $${returnsValue.toLocaleString('es-CO')}` : null,
       ...returnsLines,
       `Total a cobrar: COP $${liquidatedTotal.toLocaleString('es-CO')}`,
+      '',
+      BANK_ACCOUNT_TEXT,
       '',
       `¿Confirmas estos datos, ${vendorName}? (sí / no)`
     ].filter((l): l is string => l !== null);
@@ -1602,7 +1722,7 @@ export default function ChatInterface() {
       setMessages(prev => [...prev, {
         id: nextMessageId(),
         type: 'bot',
-        content: `✅ Remisión ${remissionId} liquidada. Total a cobrar: COP $${liquidatedTotal.toLocaleString('es-CO')}\n\n📄 PDF: ${pdfUrl}`,
+        content: `✅ Remisión ${remissionId} liquidada. Total a cobrar: COP $${liquidatedTotal.toLocaleString('es-CO')}\n\n${BANK_ACCOUNT_TEXT}\n\n📄 PDF: ${pdfUrl}`,
         timestamp: new Date()
       }]);
       setConversationState('rem_done');
@@ -1675,6 +1795,7 @@ export default function ChatInterface() {
     conversationState === 'rem_awaiting_discount' ? 'Descuento % (0 si no aplica)...' :
     conversationState === 'rem_awaiting_freight' ? 'Valor del flete (0 si no aplica)...' :
     conversationState === 'rem_awaiting_returns_yn' ? 'sí / no...' :
+    conversationState === 'rem_awaiting_returns_bulk' ? 'Pega el texto o sube una foto de las devoluciones...' :
     conversationState === 'rem_awaiting_return_ref' ? 'Referencia...' :
     conversationState === 'rem_awaiting_return_qty' ? 'Cantidad...' :
     conversationState === 'rem_awaiting_return_price' ? 'Precio unitario...' :
@@ -1901,14 +2022,14 @@ export default function ChatInterface() {
                   <div className="mt-2 space-y-1.5">
                     {msg.metadata.remissionOptions.map((match, i) => (
                       <button
-                        key={match.remissionId}
+                        key={`${match.orderId}-${match.remissionId ?? 'pedido'}`}
                         onClick={() => handleSelectRemissionMatch(match)}
                         disabled={conversationState !== 'rem_choosing_match'}
                         className="w-full text-left bg-[#f0fdf8] border border-[#00a884]/30 rounded-lg px-3 py-2 hover:bg-[#dcfce7] active:scale-[0.98] transition-all disabled:opacity-50 disabled:cursor-not-allowed"
                       >
                         <p className="text-sm font-medium text-gray-800 leading-snug">{i + 1}. {match.customerName}</p>
                         <p className="text-xs text-[#00a884] font-semibold mt-0.5">
-                          {match.remissionId} · {match.orderId} · COP ${match.total.toLocaleString('es-CO')}
+                          {match.orderId}{match.remissionId ? ` · ${match.remissionId}` : ' · sin empacar'} · COP ${match.total.toLocaleString('es-CO')}
                         </p>
                       </button>
                     ))}
@@ -2017,7 +2138,7 @@ export default function ChatInterface() {
           {remOrder?.phone && (
             <a
               href={`https://wa.me/57${remOrder.phone.replace(/\D/g, '').replace(/^57/, '')}?text=${encodeURIComponent(
-                `Hola ${remOrder.customer}, adjunto la remisión liquidada de tu pedido ${remOrder.id}:\n${window.location.origin}/api/remissions/${remResult.remissionId}/liquidated-pdf\nTotal: COP $${remResult.liquidatedTotal.toLocaleString('es-CO')}`
+                `Hola ${remOrder.customer}, adjunto la remisión liquidada de tu pedido ${remOrder.id}:\n${window.location.origin}/api/remissions/${remResult.remissionId}/liquidated-pdf\nTotal a consignar: COP $${remResult.liquidatedTotal.toLocaleString('es-CO')}\n\n${BANK_ACCOUNT_TEXT}`
               )}`}
               target="_blank"
               rel="noopener noreferrer"
@@ -2047,8 +2168,8 @@ export default function ChatInterface() {
           </p>
         )}
         <div className="flex items-center gap-2">
-          {/* Botones de imagen (solo cuando ready) */}
-          {conversationState === 'ready' && (
+          {/* Botones de imagen (tomar pedido, o subir foto de devoluciones al liquidar) */}
+          {(conversationState === 'ready' || conversationState === 'rem_awaiting_returns_bulk') && (
             <>
               {/* Cámara — abre cámara directamente en móvil */}
               <label

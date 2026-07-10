@@ -5,6 +5,14 @@ import { getSupabase } from '@/lib/supabase-server';
 
 export const dynamic = 'force-dynamic';
 
+// Cuenta de la compañía donde el cliente consigna el valor liquidado.
+const BANK_ACCOUNT = {
+  holder: 'IMPORTADORA EL PUNTAZO',
+  bank: 'Bancolombia',
+  type: 'Ahorros',
+  number: '02900005768',
+};
+
 export async function GET(
   _request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -177,7 +185,41 @@ export async function GET(
         },
         margin: { left: margin, right: margin },
       });
+      y = (doc as any).lastAutoTable.finalY + 6;
     }
+
+    // Datos para el pago / consignación de la compañía
+    let yP = y;
+    if (yP + 40 > pageHeight - 12) {
+      doc.addPage();
+      yP = 20;
+    }
+    doc.setFontSize(9);
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(0, 0, 0);
+    doc.text('DATOS PARA EL PAGO', margin, yP);
+    yP += 3;
+
+    autoTable(doc, {
+      startY: yP,
+      body: [
+        ['Titular', BANK_ACCOUNT.holder],
+        ['Banco', BANK_ACCOUNT.bank],
+        ['Tipo de cuenta', BANK_ACCOUNT.type],
+        ['N.º de cuenta', BANK_ACCOUNT.number],
+        [
+          { content: 'Valor a consignar', styles: { fontStyle: 'bold', fontSize: 10 } },
+          { content: `COP ${fmt(liquidatedTotal)}`, styles: { fontStyle: 'bold', fontSize: 10, textColor: [109, 40, 217] } },
+        ],
+      ] as any,
+      theme: 'grid',
+      styles: { fontSize: 8.5, cellPadding: 2.5 },
+      columnStyles: {
+        0: { fontStyle: 'bold', cellWidth: 45, fillColor: [245, 245, 245] },
+        1: { cellWidth: contentWidth - 45 },
+      },
+      margin: { left: margin, right: margin },
+    });
 
     // Footer
     doc.setFontSize(7);

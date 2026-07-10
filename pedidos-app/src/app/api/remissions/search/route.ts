@@ -32,7 +32,17 @@ const SELECT = `
   orders!inner (id, customers (name, phone))
 `;
 
-const toMatch = (r: RemissionRow) => ({
+interface Match {
+  remissionId: string | null; // null = pedido sin empacar aún (sin remisión)
+  orderId: string;
+  customerName: string;
+  phone: string;
+  total: number;
+  createdAt: string;
+  items: { ref: string; name: string; quantity: number; price: number; unit_type: string }[];
+}
+
+const toMatch = (r: RemissionRow): Match => ({
   remissionId: r.id,
   orderId: r.order_id,
   customerName: r.orders?.customers?.name || 'Sin nombre',
@@ -127,7 +137,50 @@ export async function GET(request: NextRequest) {
     const { data, error } = await query;
     if (error) throw error;
 
-    const matches = ((data || []) as unknown as RemissionRow[]).map(toMatch);
+    const matches: Match[] = ((data || []) as unknown as RemissionRow[]).map(toMatch);
+
+    // Sin restricciones: si el pedido existe pero bodega aún no lo ha empacado
+    // (no tiene remisión), igual se ofrece como resultado. El vendedor lo puede
+    // tomar tal cual — al elegirlo, el cliente llama a /api/remissions/from-order
+    // que genera la remisión desde los items del pedido.
+    if (!remissionId) {
+      const coveredOrderIds = new Set(matches.map(m => m.orderId));
+      const pendingIds = (orderId ? [orderId] : orderIdsFilter || []).filter(id => !coveredOrderIds.has(id));
+      if (pendingIds.length > 0) {
+        const { data: rawOrders, error: ordersErr } = await supabase
+          .from('orders')
+          .select('id, created_at, customers (name, phone), order_items (product_ref, product_name, quantity, price_at_time, unit_type)')
+          .in('id', pendingIds);
+        if (ordersErr) throw ordersErr;
+
+        type OrderOnlyRow = {
+          id: string;
+          created_at: string;
+          customers: { name: string | null; phone: string | null } | null;
+          order_items: { product_ref: string; product_name: string; quantity: number; price_at_time: number; unit_type: string | null }[] | null;
+        };
+        for (const o of (rawOrders || []) as unknown as OrderOnlyRow[]) {
+          const items = o.order_items || [];
+          if (items.length === 0) continue;
+          matches.push({
+            remissionId: null,
+            orderId: o.id,
+            customerName: o.customers?.name || 'Sin nombre',
+            phone: o.customers?.phone || '',
+            total: items.reduce((s, i) => s + (i.price_at_time || 0) * (i.quantity || 0), 0),
+            createdAt: o.created_at,
+            items: items.map(i => ({
+              ref: i.product_ref,
+              name: i.product_name,
+              quantity: i.quantity,
+              price: i.price_at_time,
+              unit_type: i.unit_type || 'unidad',
+            })),
+          });
+        }
+      }
+    }
+
     return NextResponse.json({ success: true, matches });
   } catch (error) {
     console.error('GET /api/remissions/search error:', error);

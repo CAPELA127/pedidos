@@ -4,23 +4,23 @@ import { getSupabase } from '@/lib/supabase-server';
 
 export const dynamic = 'force-dynamic';
 
-// Mismos encabezados y orden que "facturaA-971.xlsx" (formato real de facturación) —
-// la secretaría importa este archivo directo al sistema contable, así que
-// el formato debe calzar exactamente (nombres de columna, orden).
+// Mismos encabezados y orden que "plantilla-importar-documento.xlsx" (plantilla
+// oficial de importación del sistema contable) — la secretaría importa este
+// archivo directo, así que el formato debe calzar exactamente (nombres de
+// columna, orden). Las columnas "(No modificar)" las recalcula el sistema al
+// importar, pero se envían ya calculadas para que el archivo sea consistente.
 const HEADERS = [
-  'Referencia/Cod. Barras',
-  'Cod. Barras',
+  'Referencia o codigo de barras',
   'Nombre',
-  'Cantidad',
-  'Unidad de Medida',
   'Precio Unitario',
+  'Cantidad',
   'Descuento',
   'Impuesto',
-  'Total',
-  'Atributo',
-  'Costo',
-  'Costo_real',
-  'cantidad_develta',
+  'SubTotal (No modificar)',
+  'Estampilla(sino Aplica 0)',
+  'Impoconsumo(sino Aplica 0)',
+  'Total (No modificar)',
+  'id_plan_cuenta (opcional solo Egresos)',
 ];
 
 interface OrderItemRow {
@@ -92,22 +92,22 @@ export async function GET(
     }) => {
       const discount = opts.orig?.discount_percent || 0;
       const tax = opts.orig?.tax_percent || 0;
+      const estampilla = 0;
+      const impoconsumo = 0;
       const subtotal = opts.price * opts.qty * (1 - discount / 100);
-      const total = subtotal * (1 + tax / 100);
+      const total = subtotal * (1 + tax / 100) + estampilla + impoconsumo;
       return [
-        opts.ref || '',
-        opts.orig?.barcode || '',
+        opts.ref || opts.orig?.barcode || '',
         opts.name || '',
-        opts.qty,
-        opts.unitType || 'unidad',
         opts.price,
+        opts.qty,
         discount,
         tax,
+        subtotal,
+        estampilla,
+        impoconsumo,
         total,
-        opts.orig?.notes || '',
-        opts.orig?.cost || 0,
-        opts.orig?.real_cost || 0,
-        opts.returnedQty,
+        '',
       ];
     };
 
@@ -140,13 +140,13 @@ export async function GET(
 
     const worksheet = xlsx.utils.aoa_to_sheet(rows);
     worksheet['!cols'] = [
-      { wch: 22 }, { wch: 16 }, { wch: 28 }, { wch: 10 }, { wch: 16 },
-      { wch: 14 }, { wch: 11 }, { wch: 10 }, { wch: 14 }, { wch: 16 },
-      { wch: 14 }, { wch: 14 }, { wch: 16 },
+      { wch: 28 }, { wch: 30 }, { wch: 14 }, { wch: 10 }, { wch: 11 },
+      { wch: 10 }, { wch: 18 }, { wch: 20 }, { wch: 22 }, { wch: 18 },
+      { wch: 30 },
     ];
 
     const workbook = xlsx.utils.book_new();
-    xlsx.utils.book_append_sheet(workbook, worksheet, 'Hoja1');
+    xlsx.utils.book_append_sheet(workbook, worksheet, 'Plantilla para importar');
     const buf = xlsx.write(workbook, { type: 'buffer', bookType: 'xlsx' });
 
     return new NextResponse(buf, {
